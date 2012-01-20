@@ -1,0 +1,4578 @@
+#############################################################################
+#  Copyright (C) 2008 NTT
+#############################################################################
+
+#####################################################################
+# Function: JavaParser.yp
+#
+#
+# 概要:
+# Javaソースコードを構文解析するための構文規則を定義する。本ソース
+# コードは、Parser::Yappモジュールによりパーサに変換される。
+# 
+# 特記事項:
+# なし
+#
+#####################################################################
+
+#!
+#! headerセクションに記述するコメントについて
+#! headerセクションに記述するコメントは「#!」で記述する。
+#! これは、NaturalDocsに余分な出力を行わせないための措置である。
+#!
+
+
+#!
+#! トークンの定義
+#!
+#!%token LP_TOKEN RP_TOKEN CM_TOKEN DOT_TOKEN CLN_TOKEN SMC_TOKEN QUES_TOKEN
+#!%token LSB_TOKEN RSB_TOKEN ABSTRACT_TOKEN ASSERT_TOKEN BOOLEAN_TOKEN BREAK_TOKEN
+#!%token BYTE_TOKEN CASE_TOKEN CATCH_TOKEN CHAR_TOKEN CLASS_TOKEN 
+#!%token CONTINUE_TOKEN DEFAULT_TOKEN DO_TOKEN DOUBLE_TOKEN ELSE_TOKEN ENUM_TOKEN
+#!%token EXTENDS_TOKEN FALSE_TOKEN FINAL_TOKEN FINALLY_TOKEN FLOAT_TOKEN FOR_TOKEN
+#!%token IF_TOKEN IMPLEMENTS_TOKEN IMPORT_TOKEN INSTANCEOF_TOKEN
+#!%token INT_TOKEN INTERFACE_TOKEN LONG_TOKEN MINUS_OPR NATIVE_TOKEN NEW_TOKEN NULL_TOKEN
+#!%token PACKAGE_TOKEN PRIVATE_TOKEN PROTECTED_TOKEN PUBLIC_TOKEN RETURN_TOKEN
+#!%token SHORT_TOKEN STATIC_TOKEN STRICTFP_TOKEN SUPER_TOKEN SWITCH_TOKEN
+#!%token SYNCHRONIZED_TOKEN THIS_TOKEN THROW_TOKEN THROWS_TOKEN TRANSIENT_TOKEN
+#!%token TRUE_TOKEN TRY_TOKEN VOID_TOKEN VOLATILE_TOKEN WHILE_TOKEN LCB_TOKEN
+#!%token RCB_TOKEN FLOAT_LITERAL INTEGER_LITERAL CHAR_LITERAL STRING_LITERAL
+#!%token IDENTIFIER PREFIX_OPR POSTFIX_OPR ASSIGN_P_OPR
+#!%token PLUS_OPR EQUAL_OPR ASTARI_OPR GT_OPR LT_OPR AMP_OPR
+#!%token ATMARK_INTERFACE_TOKEN ATMARK_TOKEN
+#!%token CONST_TOKEN GOTO_TOKEN  # 仕様書上キーワード定義であるが使用されていない
+
+#!
+#! shift/reduce規則の定義
+#!
+%right LCB_TOKEN LSB_TOKEN LP_TOKEN LT_OPR
+%left  RCB_TOKEN RSB_TOKEN
+%left  REDUCE_
+
+#!
+#! 先頭ルールの定
+#!
+%start CompilationUnit
+
+#!
+#! 処理ロジックの定義
+#!
+%{
+use warnings;
+no warnings "recursion";
+use strict;
+use Carp;
+use utf8;
+use PgSqlExtract::Common::Lexer;
+use PgSqlExtract::Common;
+use Scalar::Util;
+
+#!
+#! 識別子(Identifiers)の定義
+#!
+my $Identifiers = qr{ ( [\w_\$][\w\d_\$]* ) }xms;
+
+
+#!
+#! キーワード（予約語）の定義
+#!
+my %keywords = (
+    map { $_ => uc($_) . '_TOKEN' } qw(
+        abstract    continue    for           new          switch
+        assert      default     if            package      synchronized
+        boolean     do          goto          private      this
+        break       double      implements    protected    throw
+        byte        else        import        public       throws
+        case        enum        instanceof    return       transient
+        catch       extends     int           short        try
+        char        final       interface     static       void 
+        class       finally     long          strictfp     volatile
+        const       float       native        super        while
+    ),
+);
+
+#!
+#! リテラルパターンの定義(Integer Literals)
+#!
+my $Digit                    = qr{\d}xms;
+my $HexDigit                 = qr{[\da-fA-F]}xms;
+my $OctDigit                 = qr{[0-7]}xms;
+my $IntegerTypeSuffix        = qr{[lL]}xms;
+my $DecimalNumeral           = qr{ 0 | [1-9] $Digit* }xms;
+
+my $HexNumeral               = qr{ 0 [xX] $HexDigit+ }xms;
+
+my $OctalNumeral             = qr{ 0 $OctDigit+ }xms;
+
+my $DecimalIntegerLiteral    = qr{ $DecimalNumeral $IntegerTypeSuffix? }xms;
+my $HexIntegerLiteral        = qr{ $HexNumeral     $IntegerTypeSuffix? }xms;
+my $OctalIntegerLiteral      = qr{ $OctalNumeral   $IntegerTypeSuffix? }xms;
+
+
+#!
+#! リテラルパターンの定義(Floating-Point Literals)
+#!
+my $ExponentPart     = qr{ [eE] [+-]?\d+ }xms;
+my $FloatTypeSuffix  = qr{ [fFdD] }xms;
+my $HexSignificand   = qr{ 0 [xX] (?: $HexDigit+ \.? | $HexDigit* \. $HexDigit+) }xms;
+my $BinaryExponentIndicator = qr{ [pP] [+-]?\d+ }xms; 
+
+
+my $DecimalFPLiteral1 = qr{ $Digit+ \. $Digit* $ExponentPart? $FloatTypeSuffix?}xms;
+my $DecimalFPLiteral2 = qr{         \. $Digit+ $ExponentPart? $FloatTypeSuffix?}xms;
+my $DecimalFPLiteral3 = qr{            $Digit+ $ExponentPart  $FloatTypeSuffix?}xms;
+my $DecimalFPLiteral4 = qr{            $Digit+ $ExponentPart? $FloatTypeSuffix}xms;
+my $HexadecimalFPLiteral = qr{ $HexSignificand $BinaryExponentIndicator $FloatTypeSuffix? }xms;
+
+#!
+#! リテラルパターンの定義(Boolean)
+#! Booleanリテラルは、キーワードとして扱う
+#!
+$keywords{'true'}  = 'TRUE_TOKEN';
+$keywords{'false'} = 'FALSE_TOKEN';
+
+#!
+#! リテラルパターンの定義(Character)
+#! ''内に任意の文字列を記述可能とする定義としており、これは本来の定義とは
+#! 異なるが、これは'\u000'といった記述に対応するためである。
+#! コンパイルが正常終了したソースコードが解析対象となるため、下記の定義で
+#! 字句解析を行っても問題ない。
+#!
+my $CharacterLiteral = qr{ ['] (?: [^'\\] | \\[btnfru"'\\0-9] )* ['] }xms;
+
+#!
+#! リテラルパターンの定義(String)
+#!
+my $StringLiteral    = qr{ ["] (?: [^"\\] | \\[btnfru"'\\0-9] )* ["] }xms;
+
+
+#!
+#! リテラルパターンの定義(Null)
+#! Nullリテラルは、キーワードとして扱う
+#!
+$keywords{'null'}  = 'NULL_TOKEN';
+
+
+#!
+#! セパレータパターンの定義
+#! セパレータパターンは、キーワードとして扱う
+#! ただし、DOT_TOKENはfloat値との誤認識を避けるため、特殊キーワードとして定義する
+#!
+my %separator = (
+    '(' => 'LP_TOKEN' ,
+    ')' => 'RP_TOKEN' ,
+    '{' => 'LCB_TOKEN',
+    '}' => 'RCB_TOKEN',
+    '[' => 'LSB_TOKEN',
+    ']' => 'RSB_TOKEN',
+    ';' => 'SMC_TOKEN',
+    ',' => 'CM_TOKEN' ,
+#!    '.' => 'DOT_TOKEN',
+);
+
+while(my ($key, $value) = each %separator) {
+    $keywords{$key} = $value;
+}
+
+#!
+#! コロン、クエスションはキーワードとして扱う
+#!
+$keywords{':'} = 'CLN_TOKEN';
+$keywords{'?'} = 'QUES_TOKEN';
+
+
+#!
+#! オペレータパターンの定義
+#!
+#! オペレータについては、'=', '+', '+='について個別に識別する。これは、式解析
+#! での判断対象となるためである。
+#! また、'*'、'<>'、'&'、についても個別に識別する。これは、構文を構成する文字
+#! であるためである。
+#! 他のオペレータについては字句解析の高速化のため個別には識別しない。
+#!
+#! パターンマッチによるオペレータの誤認識('&&'を'&''&'と認識するなど)を避ける
+#! ように定義の順番を考慮すること
+#!
+#! shift演算子については、'>>'は、TypeArgumentsの入れ子(<String, Map<String, String>>など)の
+#! 終端と誤認識する場合があるため、GT_OPRの連続で定義する。そのため、トークンとしては
+#! 定義しない。
+#!
+my $oprAssignEqual = qr{ = }xms;
+my $oprAssignPls   = qr{ \+= }xms;
+my $oprPlus        = qr{ \+ }xms;
+
+my $oprAssign      = qr{ >{2,3}= | <{2}= | [*/&|^%-]= }xms;
+my $oprCOr         = qr{\|\|}xms;
+my $oprCAnd        = qr{&&}xms;
+my $oprOr          = qr{\|}xms;
+my $oprNor         = qr{\^}xms;
+my $oprAmp         = qr{&}xms;
+my $oprEquality    = qr{[=!]=}xms;
+my $oprRelational  = qr{[<>]=}xms;
+#!my $oprShift       = qr{>{2,3} | <{2}}xms;
+my $oprShift       = qr{<{2}}xms;
+my $oprMulti       = qr{[/%]}xms;
+my $oprAsteri      = qr{ \* }xms;
+my $oprMinus       = qr{ - }xms;
+my $oprGt          = qr{ > }xms;
+my $oprLt          = qr{ < }xms;
+my $oprPostfix     = qr{ \+\+ | -- }xms;
+my $oprPrefix      = qr{[!~]}xms;
+
+
+#!
+#! 特殊キーワード
+#! BNFによる構文定義のみでは表現が難しいものについては、字句解析で識別を行う
+#! 方針とする
+#! そのような特殊なキーワードを定義する
+#! - Annotationを示す@は、@InterfaceとInterfaceで定義を共用するため、特殊定義
+#!   とする
+#! - line指定として、#lineをキーワードとして定義する
+#!
+my $annoInterface = qr{[@] \s* interface }xms;
+my $atmark        = qr{@}xms;
+my $dot           = qr{[.]};
+my $line_detective = qr{[#]line}xms;
+#!$keywords{'\#line'} = 'LINE_DECL_TOKEN';
+
+
+#!
+#! レクサに定義するパターンの定義
+#!
+my @pattern = (
+
+    #
+    # リテラルパターン(Floating-Point Literals)
+    #
+    $DecimalFPLiteral1,     'FLOAT_LITERAL', 
+    $DecimalFPLiteral2,     'FLOAT_LITERAL', 
+    $DecimalFPLiteral3,     'FLOAT_LITERAL', 
+    $DecimalFPLiteral4,     'FLOAT_LITERAL', 
+    $HexadecimalFPLiteral,  'FLOAT_LITERAL', 
+    
+    
+    #
+    # リテラルパターン(Integer Literals)
+    #
+    $HexIntegerLiteral,     'INTEGER_LITERAL',
+    $OctalIntegerLiteral,   'INTEGER_LITERAL',
+    $DecimalIntegerLiteral, 'INTEGER_LITERAL',
+    
+    #
+    # リテラルパターン(Character)
+    #
+    $CharacterLiteral,      'CHAR_LITERAL',
+
+    #
+    # リテラルパターン(String)
+    #
+    $StringLiteral,        'STRING_LITERAL',
+
+    #
+    # 識別子
+    #
+    $Identifiers,           'IDENTIFIER',
+
+    #
+    # 特殊キーワード
+    #
+	$annoInterface,         'ATMARK_INTERFACE_TOKEN',
+	$line_detective,        'LINE_DECL_TOKEN',
+
+	#
+	# オペレータパターン
+	# 定義する順番に注意する
+	# マッチング対象の文字列長が長いものから定義する必要がある
+	#
+    $oprAssign,            'ASSIGN_OPR',
+    $oprShift,             'SHIFT_OPR',
+    $oprEquality,          'EQUALITY_OPR',
+    $oprRelational,        'RELATIONAL_OPR',
+    $oprAssignPls,         'ASSIGN_P_OPR',
+    $oprCOr,               'COR_OPR',
+    $oprCAnd,              'CAND_OPR',
+    $oprPostfix,           'POSTFIX_OPR',
+	$oprAssignEqual,       'EQUAL_OPR',
+	$oprPlus,              'PLUS_OPR',
+	$oprOr,                'OR_OPR',
+	$oprNor,               'NOR_OPR',
+	$oprAmp,               'AMP_OPR',
+	$oprMulti,             'MULTI_OPR',
+	$oprAsteri,            'ASTARI_OPR',
+	$oprMinus,             'MINUS_OPR',
+	$oprGt,                'GT_OPR',
+	$oprLt,                'LT_OPR',
+    $oprPrefix,            'PREFIX_OPR',
+	$atmark,               'ATMARK_TOKEN',
+	$dot,                  'DOT_TOKEN',
+);
+
+
+#!
+#! 解析対象外パターン(コメント、空白文字)の定義
+#! '\s'は、空白、HT(水平タブ)、FF(フォームフィード)、改行(CR, LF, CR+LF)に
+#! マッチングする
+#!
+my $commentPattern = q(
+    ( (?:  \s+
+           | //[^\n]*
+           | /\*.*?\*/
+      )+
+    )
+);
+
+
+#!
+#! トークンIDの識別表を作成する
+#! クラスメンバ変数の終端を示す特殊なトークンID「VARDECL_DELIMITER」を追加する
+#!
+my @tokenIdlist = values %keywords;
+my $index = 0;
+push(@tokenIdlist, grep { $index++ % 2 == 1 } @pattern);
+map {$tokenId{$_} = $index++ } @tokenIdlist;
+$tokenId{'VARDECL_DELIMITER'} = $index++;
+
+#!
+#! キーワードに対するトークン情報オブジェクトプールを作成する
+#! lookupは、トークン情報がプール対象であるかを判別するハッシュである
+#! キーワード以外はプール対象としない（'VARDECL_DELIMITER'は特別なキーワード
+#! としてプールする)
+#!
+my %G_tokenchace = ();
+my %lookup = reverse %keywords;
+$lookup{'VARDECL_DELIMITER'} = '##;##';
+
+#!
+#! トークン一覧を作成する（デバッグ用）
+#!
+#!open(OUT, ">TOKEN_LIST.txt") or die "File create error TOKEN_LIST.txt\n$!\n";
+#!for my $key (sort keys %keywords) {
+#!    print OUT "$key\t$keywords{$key}\n";
+#!}
+#!for(my $i = 0; $i < scalar @pattern; $i+=2) {
+#!    print OUT "$pattern[$i]\t$pattern[$i+1]\n";
+#!}
+#!lose(OUT);
+
+
+
+my $counter = 0;
+
+#!
+#! レクサの生成およびパターンの登録
+#!
+my $lex = PgSqlExtract::Common::Lexer->new();
+$lex->setPattern({
+        EXT_KEYWORD => \%keywords,
+        EXT_PATTERN => \@pattern,
+        SKIP_PATTERN => $commentPattern
+    });
+$lex->setDebugMode(0);
+
+
+
+#!
+#! ノード種別の定義
+#! ノード種別の比較にはequal_nodetype関数を使用する
+#!
+my $nodetypeid = 1;
+my %nodetypehash = (
+    map { $_ => $nodetypeid++ } qw(
+ N_AdditiveExpression N_AndExpression N_Arguments N_ArrayDim N_assert
+ N_AssignmentOperator N_BlockStatements N_CastExpression N_catch N_catches
+ N_ConditionalAndExpression N_ConditionalExpressionRest N_ConditionalOrExpression
+ N_ConstantDeclarator N_ConstantDeclaratorRest N_ConstantDeclaratorsRest
+ N_Delimiter N_else N_EqualityExpression N_ExclusiveOrExpression N_Expression
+ N_ExpressionList N_ExprInDim N_finally N_for N_ForControl N_forInit N_ForUpdate
+ N_ForVarControl N_if N_InclusiveOrExpression N_InstanceOfExpression
+ N_LocalVariableDeclarationStatement N_MetaNode N_MethodBody N_MethodInvocation
+ N_Modifier N_MoreStatementExpressions N_MultiplicativeExpression N_NormalFor
+ N_ParExpression N_Primary N_QualifiedIdentifier N_QualifiedIdentifierList
+ N_RelationalExpression N_return N_ScopeInfo N_ShiftExpression N_switch
+ N_SwitchBlockStatementGroup N_SwitchBlockStatementGroups N_SwitchLabel
+ N_synchronized N_throw N_Type N_VariableDeclarator N_VariableDeclaratorRest
+ N_VariableDeclarators N_VariableDeclaratorsRest N_VariableInitializerList
+ N_while N_try N_ExpandFor
+
+    ),
+);
+
+#!
+#! ノード種別のキャッシュ
+#! scantree内で頻繁に使用される下記のノード種別については、値を別に保持する
+#!
+my $G_ScopeInfo_id = $nodetypehash{'N_ScopeInfo'};
+my $G_Delimiter_id = $nodetypehash{'N_Delimiter'};
+my $G_MetaNode_id  = $nodetypehash{'N_MetaNode'};
+my $G_element_id   = 0;
+
+#!
+#! static擬似メソッドの付与ID
+#! staticイニシャライザについては、擬似的なメソッドと解釈して解析を行う
+#! その擬似的なメソッドのメソッド識別子に付与するIDである
+#!
+my $G_static_number = 0;
+
+#!
+#! ファイル情報へのリファレンス
+#! クラス情報は、それを抽出した時点でファイル情報へ格納される
+#!
+my $G_fileinfo_ref;
+
+#!
+#! 抽出したクラス名をスタックで管理する
+#!
+my @G_classname_ident = ();
+
+
+%}
+
+%%
+
+#####################################################################
+# Function: Literal 
+# 概要:
+# Literalの定義である。
+#
+# 構文:
+# | Literal:
+# |     IntegerLiteral
+# |     FloatingPointLiteral
+# |     CharacterLiteral
+# |     StringLiteral
+# |     BooleanLiteral
+# |     NullLiteral
+#
+# 処理概要:
+# - Literalに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+Literal:
+    INTEGER_LITERAL
+    | FLOAT_LITERAL
+    | CHAR_LITERAL
+    | STRING_LITERAL {
+        $_[1]->{TOKEN} =~ s{\A"}{}xms;
+        $_[1]->{TOKEN} =~ s{"\z}{}xms;
+        $_[1]
+    }
+    | TRUE_TOKEN
+    | FALSE_TOKEN
+    | NULL_TOKEN
+;
+
+#####################################################################
+# Function: Expression
+#
+# 概要:
+# Expressionsの定義である。
+# 
+# 構文:
+# | Expression:
+# |     Expression1 [AssignmentOperator Expression1]]
+# | 
+# | Expression1:
+# |     Expression2 [Expression1Rest]
+# | 
+# | Expression1Rest:
+# |     '?'   Expression ':' Expression1
+# | 
+# | Expression2 :
+# |         Expression3 [Expression2Rest]
+# | 
+# | Expression2Rest:
+# |         {InfixOp Expression3}
+# |         Expression3 instanceof Type
+# | 
+# | InfixOp:
+# |         ||
+# |         &&
+# |         |
+# |         ^
+# |         &
+# |         ==
+# |         !=
+# |         <
+# |         >
+# |         <=
+# |         >=
+# |         <<
+# |         >>
+# |         >>>
+# |         +
+# |         -
+# |         *
+# |         /
+# |         %
+# | 
+# | Expression3:
+# |     PrefixOp Expression3
+# |     '(' Expression | Type ')' Expression3
+# |     Primary {Selector} {PostfixOp}
+# | 
+# | Primary:
+# |     ParExpression
+# |     | NonWildcardTypeArguments 
+# |           (ExplicitGenericInvocationSuffix | 'this' Arguments)
+# |     | 'this' [Arguments]
+# |     | 'super' SuperSuffix
+# |     | Literal
+# |     | 'new' Creator
+# |     | Identifier { '.' Identifier }[ IdentifierSuffix]
+# |     | BasicType {'['']'} '.' 'class'
+# |     | 'void' '.' 'class'
+# |
+# | ExplicitGenericInvocation:
+# |     NonWildcardTypeArguments ExplicitGenericInvocationSuffix
+# | 
+# | NonWildcardTypeArguments:
+# |     '<' TypeList '>'
+# | 
+# | 
+# | ExplicitGenericInvocationSuffix:
+# |     'super' SuperSuffix
+# |     Identifier Arguments
+# | 
+# | IdentifierSuffix:
+# |     '[' ( ']' {'['']'} '.' 'class' | Expression ']')
+# |     | Arguments
+# |     | '.' ( 'class' 
+# |              | ExplicitGenericInvocation
+# |              | 'this' 
+# |              | 'super' Arguments
+# |              | 'new'[NonWildcardTypeArguments] InnerCreator
+# |            )
+# | 
+# | PrefixOp:
+# |         ++
+# |         --
+# |         !
+# |         ~
+# |         +
+# |         -
+# | 
+# | PostfixOp:
+# |         ++
+# |         --
+# | 
+# | Selector:
+# | '.' Identifier [Arguments]
+# | '.' ExplicitGenericInvocation
+# | '.' 'this'
+# | '.' 'super' SuperSuffix
+# | '.' 'new' [NonWildcardTypeArguments] InnerCreator
+# | '[' Expression ']'
+# | 
+# | SuperSuffix:
+# |     Arguments
+# |     '.' Identifier [Arguments]
+#
+# 処理概要:
+# - Expressionに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 構文不備：The Java Language Specification, Third Editionの18章に
+#   定義されている構文は、LALR構文として成立していないため、前述の
+#   構文定義によらず、独自の構文定義で実装する
+# - 抽出したトークンは、構文ごとにリストに格納し、そのリストのリファレンス
+#   を返却する。そのためトークンリストは構文ごとのツリー構造を形成する
+# - トークンリストの第0要素は、その式を示すキーワードとする
+# - 式解析に必要とならない情報はトークンリストに含まない。含まない情報は
+#   以下とする
+# |-- 単項演算子
+# |-- キャスト式
+# |-- 優先順位のための括弧
+#
+#
+#####################################################################
+
+Expression:
+    ConditionalExpression {
+        ['N_Expression', $_[1]];
+    }
+    | Expression AssignmentOperator ConditionalExpression {
+        my $leftside = pop(@{$_[1]});
+        push(@{$_[1]}, [ 'N_AssignmentOperator', $leftside, $_[2], $_[3] ]);
+        $_[1]
+    } 
+;
+
+ExpressionList:
+    Expression {
+        ['N_ExpressionList', $_[1]]
+    }
+    | ExpressionList CM_TOKEN Expression {
+        push(@{$_[1]}, $_[2]);
+        push(@{$_[1]}, $_[3]);
+        $_[1];
+    }
+;
+
+ExpressionListOrEmpty:
+#    /* empty */
+    | ExpressionList
+;
+
+ExpressionOrEmpty:
+#    /* empty */
+    | Expression
+;
+
+
+ConditionalExpression:
+    ConditionalOrExpression
+    | ConditionalOrExpression ConditionalExpressionRest {
+        ['N_ConditionalOrExpression', $_[1], @{$_[2]} ]
+    }
+;
+
+ConditionalExpressionRest:
+    QUES_TOKEN Expression CLN_TOKEN Expression {
+        [$_[1], $_[2], $_[3], $_[4]]
+    }
+;
+
+
+ConditionalOrExpression:
+    ConditionalAndExpression
+    | ConditionalOrExpression COR_OPR ConditionalAndExpression {
+        ['N_ConditionalOrExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+ConditionalAndExpression:
+    InclusiveOrExpression
+    | ConditionalAndExpression CAND_OPR InclusiveOrExpression { 
+        ['N_ConditionalAndExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+InclusiveOrExpression:
+    ExclusiveOrExpression
+    | InclusiveOrExpression OR_OPR ExclusiveOrExpression {
+        ['N_InclusiveOrExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+ExclusiveOrExpression:
+    AndExpression
+    | ExclusiveOrExpression NOR_OPR AndExpression {
+        ['N_ExclusiveOrExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+AndExpression:
+    EqualityExpression
+    | AndExpression AMP_OPR EqualityExpression {
+        ['N_AndExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+EqualityExpression:
+    InstanceOfExpression
+    | EqualityExpression EQUALITY_OPR InstanceOfExpression {
+        ['N_EqualityExpression', $_[1], $_[2], $_[3]]
+    }
+;    
+
+InstanceOfExpression:
+    RelationalExpression
+    | RelationalExpression INSTANCEOF_TOKEN Type %prec REDUCE_ {
+        ['N_InstanceOfExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+RelationalExpression:
+    ShiftExpression
+    | ShiftExpression RelationalOpr ShiftExpression {
+        ['N_RelationalExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+RelationalOpr:
+    RELATIONAL_OPR | GT_OPR | LT_OPR
+;
+
+ShiftExpression:
+    AdditiveExpression
+    | ShiftExpression ShiftOpr AdditiveExpression {
+        ['N_ShiftExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+ShiftOpr:
+    SHIFT_OPR
+    | GT_OPR GT_OPR { $_[1]->{KEYWORD} = 'SHIFT_OPR'; $_[1]->{TOKEN} = '>>'; $_[1]}
+    | GT_OPR GT_OPR GT_OPR { $_[1]->{KEYWORD} = 'SHIFT_OPR'; $_[1]->{TOKEN} = '>>>'; $_[1]}
+;
+
+AdditiveExpression:
+    MultiplicativeExpression
+    | AdditiveExpression AdditiveOpr MultiplicativeExpression {
+        ['N_AdditiveExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+AdditiveOpr:
+    PLUS_OPR | MINUS_OPR
+;
+
+MultiplicativeExpression:
+    UnaryExpression
+    | MultiplicativeExpression MultiplicativeOpr UnaryExpression {
+        ['N_MultiplicativeExpression', $_[1], $_[2], $_[3]]
+    }
+;
+
+MultiplicativeOpr:
+    ASTARI_OPR | MULTI_OPR
+;
+
+# 単項演算子は解析に必要ないため削除する
+UnaryExpression:
+    UnaryOpr UnaryExpression %prec REDUCE_ {$_[2]}
+    | UnaryExpressionNotPlusMinus
+;
+
+UnaryOpr:
+    AdditiveOpr | POSTFIX_OPR
+;
+
+# 単項演算子は解析に必要ないため削除する
+UnaryExpressionNotPlusMinus:
+    PREFIX_OPR UnaryExpression %prec REDUCE_ {$_[2]}
+    | CastExpression
+    | PrimaryExpression
+    | PrimaryExpression POSTFIX_OPR %prec REDUCE_ {$_[1]}
+;
+
+
+# キャスト情報は解析に必要ないため削除する
+CastExpression:
+    LP_TOKEN BasicType RP_TOKEN UnaryExpression {['N_CastExpression', $_[4]]}
+    | LP_TOKEN Expression RP_TOKEN UnaryExpressionNotPlusMinus {['N_CastExpression', $_[4]]}
+;
+
+
+PrimaryExpression:
+    Primary
+;
+
+#
+# PrimarySuffixは、Arguments以外はノードとして返却されないため、Primaryを
+# 示すノード$_[1]へ、PrimarySuffixの内容をそのままpushする
+#
+Primary:
+    PrimaryPrefix {
+        ['N_Primary', $_[1]];
+    }
+    | Primary PrimarySuffix {
+        my $suffixnode = $_[2];
+        if($suffixnode) {
+            if(ref($suffixnode) eq 'ARRAY' 
+                and equal_nodetype($suffixnode, 'N_Arguments')) {
+            
+                my $primary = pop(@{$_[1]});
+                push(@{$_[1]}, ['N_MethodInvocation', $primary, $suffixnode]);
+
+            } else {
+                push(@{$_[1]}, @{$suffixnode} );
+            }
+        }
+        
+        $_[1]
+    }
+
+;
+
+
+# 優先順位を決める括弧は削除する(ParExpression内)
+PrimaryPrefix:
+    Literal
+    | BasicType
+    | ParExpression
+    | VOID_TOKEN
+    | THIS_TOKEN
+    | SUPER_TOKEN
+    | IDENTIFIER
+    | AllocationExpression
+#    | TypeArguments THIS_TOKEN     { $_[2] }
+#    | TypeArguments SUPER_TOKEN    { $_[2] }
+#    | TypeArguments IDENTIFIER     { $_[2] }
+;
+
+#
+# 特定の定義(ForControlなど)において、Typeの定義とExpressionの定義が同列に
+# 並ぶケースが存在する。この場合、IDENTIFIERの扱いが競合するため、そのような
+# 定義については、Typeの変わりに下記のPrimaryTypeを使用することで構文解析上
+# の競合を防ぐ
+#
+# トークンリスト上は、N_Typeノードとして返却する。そのため、N_Primaryノード
+# の内容をN_Typeノードへ移動する
+#
+#PrimaryType:
+#    Primary                     { shift @{$_[1]} && ['N_Type', @{$_[1]} ] }
+#    | IDENTIFIER TypeArguments  { ['N_Type', $_[1] ] }
+#    | PrimaryType PrimarySuffix { push(@{$_[1]}, @{$_[2]}); $_[1] }
+#;
+
+#
+# PrimarySuffixの戻り値は、トークンリスト集合そのものとし、ノード化は行わない
+# PrimarySuffixは頻繁に実行されるため、余分なリストを生成しないようにする
+#
+PrimarySuffix:
+    DOT_TOKEN THIS_TOKEN               {shift && \@_ }
+    | DOT_TOKEN SUPER_TOKEN            {shift && \@_ }
+    | DOT_TOKEN CLASS_TOKEN            {shift && \@_ }
+    | DOT_TOKEN AllocationExpression   {shift && \@_ }
+    | DOT_TOKEN IDENTIFIER             {shift && \@_ }
+#    | DOT_TOKEN IDENTIFIER TypeArguments { [$_[1], $_[2]] }
+#    | DOT_TOKEN TypeArguments IDENTIFIER             {[$_[1], $_[3]] }
+#    | DOT_TOKEN TypeArguments SUPER_TOKEN             {[$_[1], $_[3]] }
+    | ExprInDim                        {shift && \@_ }
+    | ArrayDim ArrayInitializerOrEmpty {shift && \@_ }
+    | Arguments ClassBodyOrEmpty {
+        if(defined $_[2]) {
+            my $classinfo = create_classinfo(['inner', $G_static_number++ ], 
+                                    $_[2]->{METHOD}, $_[2]->{VARIABLE});
+            push(@{$G_fileinfo_ref->classlist()}, $classinfo);
+        }
+        $_[1];
+    }
+        
+;
+
+AllocationExpression:
+    NEW_TOKEN IDENTIFIER                  { [$_[1], $_[2]] }
+#    | NEW_TOKEN IDENTIFIER TypeArguments  { [$_[1], $_[2]] }
+    | NEW_TOKEN BasicType                 { [$_[1], $_[2]] }
+#    | NEW_TOKEN TypeArguments IDENTIFIER  { [$_[1], $_[3]] }
+#    | NEW_TOKEN TypeArguments IDENTIFIER TypeArguments { [$_[1], $_[3]] }
+#    | NEW_TOKEN TypeArguments BasicType   { [$_[1], $_[3]] }
+;
+
+ArrayInitializerOrEmpty:
+#    /* empty */
+    | ArrayInitializer                 {shift && \@_ }
+;
+
+ExprInDim:
+    LSB_TOKEN Expression RSB_TOKEN {
+        shift && \@_
+    }    
+;
+
+#####################################################################
+# Function: AssignmentOperator
+# 概要:
+# AssignmentOperatorの定義である。
+#
+# 構文:
+# | AssignmentOperator: 
+# |         =
+# |         +=
+# |         -=
+# |         *=
+# |         /=
+# |         &=
+# |         |=
+# |         ^=
+# |         %=
+# |         <<=
+# |         >>=
+# |         >>>=
+#
+# 処理概要:
+# - AssignmentOperatorに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+AssignmentOperator:
+    EQUAL_OPR | ASSIGN_P_OPR | ASSIGN_OPR
+;
+
+
+#####################################################################
+#Function: Type
+# 概要:
+# Typeの定義である。
+#
+# 構文:
+# | Type:
+# |     Identifier [TypeArguments]{ '.' Identifier [TypeArguments]}{'['']'}
+# |     BasicType
+#
+# 処理概要:
+# - Typeに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 型名を返却する（メソッド情報に格納する）
+# - 識別子(Identifier)の繰り返しは、QualifiedIdentifierで一元定義する
+# - 構文不備：BasicTypeの後に省略可能な'[]'を記述可能
+#####################################################################
+Type:
+    QualifiedIdentifier ArrayDimOrEmpty { ['N_Type', $_[1], $_[2]]; }
+    | BasicType ArrayDimOrEmpty { ['N_Type', $_[1], $_[2]] }
+;
+
+ArrayDimOrEmpty:
+#    /* empty */
+    | ArrayDim
+;
+
+ArrayDim:
+    LSB_TOKEN RSB_TOKEN { ['N_ArrayDim', $_[1], $_[2]] }
+    | ArrayDim LSB_TOKEN RSB_TOKEN { push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1] }
+;   
+
+#####################################################################
+#Function: TypeArguments
+# 概要:
+# TypeArgumentsの定義である。
+#
+# 構文:
+# | TypeArguments:
+# |     '<' TypeArgument {, TypeArgument} '>'
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - ジェネリクスの型名は情報収集対象外とする
+# - ジェネリクスの定義は構文解析簡易化のため、字句解析で実施するため
+#   構文定義は省略する
+#
+#####################################################################
+#!TypeArguments:
+#!    LT_OPR TypeArgumentsList GT_OPR
+#!;
+#!
+#!TypeArgumentsList:
+#!    TypeArgument
+#!    | TypeArgumentsList CM_TOKEN TypeArgument
+#!;
+#!
+#!TypeArgumentsOrEmpty:
+#!#    /* empty */
+#!    | TypeArguments
+#!;
+#!
+#####################################################################
+#Function: TypeArgument
+# 概要:
+# TypeArgumentの定義である。
+#
+# 構文:
+# | TypeArgument
+# |     Type
+# |     | '?' [( 'extends' |'super' ) Type ]
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - ジェネリクスの型名は情報収集対象外とする
+# - ジェネリクスの定義は構文解析簡易化のため、字句解析で実施するため
+#   構文定義は省略する
+#
+#####################################################################
+#!TypeArgument:
+#!    Type
+#!    | QUES_TOKEN
+#!    | QUES_TOKEN ExtendsOrSuper Type
+#!;
+#!
+#!ExtendsOrSuper:
+#!    EXTENDS_TOKEN | SUPER_TOKEN
+#!;
+#!
+#####################################################################
+# Function: StatementExpression
+# 概要:
+# StatementExpressionの定義である。
+#
+# 構文:
+# | StatementExpression:
+# |     Expression
+#
+# 処理概要:
+# - StatementExpressionに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+StatementExpression:
+    Expression
+;
+
+
+#####################################################################
+# Function: ConstantExpression
+# 概要:
+# ConstantExpressionの定義である。
+#
+# 構文:
+# | ConstantExpression:
+# |     Expression
+#
+# 処理概要:
+# - StatementExpressionに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+ConstantExpression:
+    Expression
+;
+
+
+#####################################################################
+# Function: BasicType
+# 概要:
+# BasicTypeの定義である。
+#
+# 構文:
+# | BasicType:
+# |     byte
+# |     short
+# |     char
+# |     int
+# |     long
+# |     float
+# |     double
+# |     boolean
+#
+# 処理概要:
+# - BasicTypeに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+BasicType:
+    BYTE_TOKEN
+    | SHORT_TOKEN
+    | CHAR_TOKEN
+    | INT_TOKEN
+    | LONG_TOKEN
+    | FLOAT_TOKEN
+    | DOUBLE_TOKEN
+    | BOOLEAN_TOKEN
+;
+
+#####################################################################
+# Function: Arguments
+# 概要:
+# Argumentsの定義である。
+#
+# 構文:
+# | Arguments:
+# |     '(' [Expression { ',' Expression }] ')'
+#
+#
+# 処理概要:
+# - Argumentsに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+Arguments:
+    LP_TOKEN ExpressionListOrEmpty RP_TOKEN {
+        shift && ['N_Arguments', @_]
+    }
+;
+
+ArgumentsOrEmpty:
+#    /* empty */
+    | Arguments
+;
+
+
+
+#####################################################################
+# Function: ParExpression
+# 概要:
+# ParExpressionの定義である。
+#
+# 構文:
+# | ParExpression:
+# |     '(' Expression ')'
+#
+# 処理概要:
+# - Expressionに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+ParExpression:
+    LP_TOKEN Expression RP_TOKEN { ['N_ParExpression', $_[2]] }
+;
+
+
+#####################################################################
+# Function: Block
+# 概要:
+# Blockの定義である。
+#
+# 構文:
+# | Block:
+# |    '{' BlockStatements '}'
+#
+# 処理概要:
+# - スコープ情報を新規に作成し、以下を格納する
+# - <スコープに属するコード情報の集合>
+# - <子スコープ情報の集合>
+# - すべての子スコープ情報へ、親スコープ情報として、当該スコープ情報を設定する
+#
+# 戻り値:
+# - スコープ情報を示すトークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+Block:
+    LcbToken RcbToken {
+        [ 'N_ScopeInfo', create_scopeinfo(['N_BlockStatements']) ]
+    }
+    | LcbToken BlockStatements RcbToken {
+        [ 'N_ScopeInfo', create_scopeinfo($_[2]) ]
+    }
+;
+
+#####################################################################
+# Function: BlockStatements
+# 概要:
+# BlockStatementsの定義である。
+#
+# 構文:
+# | BlockStatements:
+# |     { BlockStatement }
+#
+# 処理概要:
+# - BlockStatementsを示すトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+BlockStatements:
+    BlockStatement {
+        my $blockstmts = ['N_BlockStatements'];
+        defined $_[1] and push(@{$blockstmts}, $_[1]);
+        $blockstmts;
+    }
+    | BlockStatements BlockStatement {
+        defined $_[2] and push(@{$_[1]}, $_[2]);
+        $_[1];
+    }
+;
+
+
+#####################################################################
+# Function: BlockStatement
+# 概要:
+# BlockStatementの定義である。
+#
+# 構文:
+# | BlockStatement :
+# |     LocalVariableDeclarationStatement   --- (1)
+# |     | ClassOrInterfaceDeclaration       --- (2)
+# |     | [Identifier :] Statement          --- (3)
+# |     | LINE_DECL_TOKEN INTEGER_LITERAL CM_TOKEN --- (4)
+#
+# 処理概要:
+# - (1)(3)を検出した場合、トークンを返却する
+# - (2)を検出した場合、何もしない（クラス情報は抽出対象辞書に格納済み）
+# - (4)を検出した場合、現在の解析行番号をINTEGER_LITERAL-1行目にに変更する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 構文不備：(3)はtatementの定義「Identifier ':' Statement」と明らか
+#   に競合するため削除する
+# - LINE_DECL_TOKENは、「line指定」である
+#####################################################################
+
+BlockStatement:
+    LocalVariableDeclarationStatement
+    | ClassOrInterfaceDeclaration
+#    | IdentifierColonOrEmpty Statement
+    | Statement
+    | LineDecl
+    
+;
+
+LineDecl:
+    LINE_DECL_TOKEN INTEGER_LITERAL SMC_TOKEN {
+        $_[0]->getLexer()->setLine($_[2]->{TOKEN});
+        undef;
+    }
+;
+
+#####################################################################
+# Function: LocalVariableDeclarationStatement
+# 概要:
+# LocalVariableDeclarationStatementの定義である。
+#
+# 構文:
+# | LocalVariableDeclarationStatement:
+# |     [ 'final' ] Type VariableDeclarators ';'
+#
+# 処理概要:
+# - LocalVariableDeclarationStatementを示すトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 構文不備：finalの前後にAnootationが記述可能
+# - Typeは、PrimaryにおけるIDENTIFIERの記述と競合するため、PrimaryType
+#   で定義する
+#####################################################################
+LocalVariableDeclarationStatement:
+    Primary VariableDeclarators SmcToken {
+        shift && ['N_LocalVariableDeclarationStatement', @_]
+    }
+    | Modifiers Type VariableDeclarators SmcToken {
+        shift && ['N_LocalVariableDeclarationStatement', @_]
+    }
+;
+
+
+#####################################################################
+# Function: Statement
+# 概要:
+# Statementの定義である。
+#
+# 構文:
+# | Statement:
+# |     Block                                                      --- (0)
+# |     | 'assert' Expression [ ':' Expression] ';'                --- (1)
+# |     | 'if' ParExpression Statement ['else' Statement]          --- (2)
+# |     | 'for' '(' ForControl ')' Statement                       --- (3)
+# |     | 'while' ParExpression Statement                          --- (4)
+# |     | 'do' Statement 'while' ParExpression ';'                 --- (5)
+# |     | 'try' Block ( Catches | [Catches] finally Block )        --- (6)
+# |     | 'switch' ParExpression '{' SwitchBlockStatementGroups '}'--- (7)
+# |     | 'synchronized' ParExpression Block                       --- (8)
+# |     | 'return' [Expression] ';'                                --- (9)
+# |     | 'throw' Expression   ';'                                 --- (10)
+# |     | 'break' [Identifier]                                     --- (11)
+# |     | 'continue' [Identifier]                                  --- (12)
+# |     | ';'                                                      --- (13)
+# |     | StatementExpression ';'                                  --- (14)
+# |     | Identifier ':' Statement                                 --- (15)
+#
+# 処理概要:
+# - (0)を検出した場合、スコープ情報に対するトークンを返却する
+# - (1)を検出した場合、assertに対するトークンを返却する
+# - (2)を検出した場合、ifに対するトークンを返却する。ParExpression、Statement
+#       および、ElseStatementをそれぞれ1Expressionとして管理する
+# - (3)を検出した場合、forに対するトークンを返却する。ForControlとStatement
+#      をそれぞれ1Expressionとして管理する
+# - (4)を検出した場合、whileに対するトークンを返却する。ParExpressionとStatement
+#      をそれぞれ1Expressionとして管理する
+# - (5)を検出した場合、do-whileに対するトークンを返却する。ParExpressionと
+#       Statementをそれぞれ1Expressionとして管理する
+# - (6)を検出した場合、try、catch、finallyに対するスコープ情報を取得する
+# - (7)を検出した場合、switchに対するトークンを返却する。ParExpressionおよび
+#      SwitchBlockStatementGroupsに対するトークンを管理する
+# - (8)を検出した場合、synchronizedに対するトークンを返却する。ParExpression
+#      および Blockに対するトークンを管理する
+# - (9)(10)を検出した場合、Expressionに対するトークンを返却する
+# - (11)(12)を検出した場合、undefを返却する（解析対象外)
+# - (13)を検出した場合、undefを返却する（解析対象外)
+# - (14)を検出した場合、StatementExpressionに対するトークンを返却する
+# - (15)を検出した場合、Statementに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 論理的な式を切り分けるために、トークンリストに特殊なトークン(Delimiter)を
+#   挿入する。コード情報生成処理は、Delimiter区切りで論理的な式と判断する
+# - 1文に対する行番号情報を補正するため、MetaNodeを各ノードに挿入する
+# - 構文不備：break [Identifier]、およびcontinue [Identifier]の後に
+#   セミコロンが必要
+#####################################################################
+Statement:
+    Block
+    | ASSERT_TOKEN Expression AssertExpOrEmpty SmcToken {
+        ['N_assert', create_linenode($_[1]), $_[2], ['N_Delimiter'], $_[3]]
+    }
+    | IF_TOKEN ParExpression Statement ElseStatementOrEmpty {
+        ['N_if', create_linenode($_[1]),  $_[2], ['N_Delimiter'], $_[3], ['N_Delimiter'], $_[4]]
+    }
+    | FOR_TOKEN LP_TOKEN ForControl RP_TOKEN Statement {
+        ['N_for', create_linenode($_[1]),  $_[3], ['N_Delimiter'], $_[5]]
+    }
+    | WHILE_TOKEN ParExpression Statement {
+        ['N_while', create_linenode($_[1]), $_[2], ['N_Delimiter'], $_[3]]
+    }
+    | DO_TOKEN Statement WHILE_TOKEN ParExpression SmcToken {
+        ['N_while', create_linenode($_[1]), $_[2], ['N_Delimiter'], create_addcode(), create_linenode($_[3]), $_[4]]
+    }
+    | TRY_TOKEN Block CatchesOrFinally {
+        ['N_try',  create_linenode($_[1]), $_[2], $_[3]]
+    }
+    | SWITCH_TOKEN ParExpression LcbToken SwitchBlockStatementGroups RcbToken {
+        ['N_switch',  create_linenode($_[1]), $_[2], ['N_ScopeInfo', create_scopeinfo($_[4])]]
+    }
+    | SYNCHRONIZED_TOKEN ParExpression Block {
+        ['N_synchronized',  create_linenode($_[1]), $_[2], $_[3]]
+    }
+    | RETURN_TOKEN SmcToken { undef }
+    | RETURN_TOKEN Expression SmcToken {
+        ['N_return',  create_linenode($_[1]), $_[2]]
+    }
+    | THROW_TOKEN Expression SmcToken { ['N_throw',  create_linenode($_[1]), $_[2]] }
+    | BREAK_TOKEN SmcToken { undef }
+    | BREAK_TOKEN IDENTIFIER SmcToken { undef }
+    | CONTINUE_TOKEN SmcToken { undef }
+    | CONTINUE_TOKEN IDENTIFIER SmcToken { undef }
+    | SmcToken { undef }
+    | StatementExpression SmcToken { $_[1] }
+    | IDENTIFIER CLN_TOKEN Statement { $_[3] }
+;
+
+AssertExpOrEmpty:
+    /* empty */
+    | CLN_TOKEN Expression { $_[2] }
+;
+
+CatchesOrFinally:
+    Catches
+    | CatchesOrEmpty FINALLY_TOKEN Block {
+        my $result = ['N_finally', $_[3]];
+        if(defined($_[1])) {
+            push(@{$_[1]}, $result);
+            $result = $_[1];
+        }
+        $result
+    }
+;
+
+CatchesOrEmpty:
+    /* empty */
+    | Catches
+;
+
+ElseStatementOrEmpty:
+    /* empty */
+    | ELSE_TOKEN Statement { ['N_else', create_addcode(), create_linenode($_[1]), $_[2]] }
+;
+
+
+#####################################################################
+# Function: Catches
+# 概要:
+# Catchesの定義である。
+#
+# 構文:
+# | Catches:
+# |    CatchClause {CatchClause}
+# | CatchClause:
+# |    'catch' '(' FormalParameter ')' Block
+# 処理概要:
+# - CatchClauseに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+Catches:
+    CatchClause { ['N_catches', $_[1]] }
+    | Catches CatchClause { push(@{$_[1]}, $_[2]) ; $_[1] }
+;
+
+CatchClause:
+     CATCH_TOKEN LP_TOKEN FormalParameterDecls RP_TOKEN Block {
+         ['N_catch', $_[5] ]
+     }
+;
+
+
+#####################################################################
+# Function: SwitchBlockStatementGroups
+# 概要:
+# SwitchBlockStatementGroupsの定義である。
+#
+# 構文:
+# | SwitchBlockStatementGroups:
+# |     { SwitchBlockStatementGroup }
+# |
+# | SwitchBlockStatementGroup:
+# |     SwitchLabel BlockStatements
+# |
+# | SwitchLabel:
+# |     'case' ConstantExpression ':'
+# |     | 'case' EnumConstantName ':'
+# |     | 'default' ':'
+#
+# 処理概要:
+# - SwitchBlockStatementGroupsに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 「'case' EnumConstantName ':'」はConstantExpressionと競合するため
+#   削除する
+# - SwitchBlockStatementGroupsは、スコープ情報内の行として管理される
+#   ため、SwitchBlockStatementGroupsのリストの要素は、論理的な1行
+#   を示すトークンリスト(ノード)である必要がある。
+#   つまり、case xxx: stmt; を1行、以降、stmt;を1行とカウントする
+#   ように、これらをそれぞれ1要素として、SwitchBlockStatementGroupsの
+#   リストに格納する。
+#####################################################################
+SwitchBlockStatementGroups:
+    /* empty */                 { ['N_SwitchBlockStatementGroups'] }
+    | SwitchBlockStatementGroup {
+        shift @{$_[1]};
+        ['N_SwitchBlockStatementGroups', @{$_[1]}];
+    }
+    | SwitchBlockStatementGroups SwitchBlockStatementGroup {
+        my $result = $_[1];
+        my $last_node = $result->[-1];
+        my $linenode = undef;
+        if(equal_nodetype($last_node, 'N_MetaNode')) {
+            $linenode = $last_node;
+        }
+        
+        if(defined $linenode) {
+            if($_[2]->[0] eq 'stmt') {
+                shift @{$_[2]};
+                my $switch_label = $_[2]->[0];
+                $switch_label->[1] = pop(@{$result});
+                push(@{$result}, @{$_[2]});
+            }
+        } else {
+            shift @{$_[2]};
+            push(@{$result}, @{$_[2]});
+        }
+        
+        $result;
+    }
+;
+
+#
+# 論理的な1行の単位でノードを作成する。
+# SwitchLabel + 先頭のBlockStatements要素で1行(case xxx: stmt;部分)、
+# 以降、残りのBlockStatements要素(次のcase文までのstmt;)ごとに1行と
+# カウントする。
+#
+# (1) BlockStatementsの先頭要素をSwitchLabelの要素として追加し、
+#     SwitchLabelを一要素とする
+# (2) 残りのBlockStatementsがある場合、それぞれの要素を一要素
+#     とする
+#
+SwitchBlockStatementGroup:
+    SwitchLabel { ['line', $_[1]] }
+    | SwitchLabel BlockStatements {
+        shift @{$_[2]};
+        my $first_block_stmt = shift @{$_[2]};
+        [ 'stmt', [ 'N_SwitchLabel', $_[1],  $first_block_stmt ], @{$_[2]} ]
+    }
+;
+
+SwitchLabel:
+    CASE_TOKEN ConstantExpression CLN_TOKEN { create_linenode($_[1]) }
+#    | CASE_TOKEN EnumConstantName CLN_TOKEN
+    | DEFAULT_TOKEN CLN_TOKEN { create_linenode($_[1]) }
+;
+
+#####################################################################
+# Function: MoreStatementExpressions
+# 概要:
+# MoreStatementExpressionsの定義である。
+#
+# 構文:
+# | MoreStatementExpressions:
+# |   { ',' StatementExpression }
+# |
+#
+# 処理概要:
+# - StatementExpressionに対するコード情報、もしくはスコープ情報の集合のリスト
+#   を取得する
+#
+# 戻り値:
+# - コード情報、もしくはスコープ情報の集合のリスト
+#
+# 特記事項:
+# なし
+#####################################################################
+MoreStatementExpressions:
+    CM_TOKEN StatementExpression { ['N_MoreStatementExpressions', $_[1], $_[2]] }
+    | MoreStatementExpressions CM_TOKEN StatementExpression {
+        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]);
+        $_[1]
+    }
+;
+
+MoreStatementExpressionsOrEmpty:
+    /* empty */
+    | MoreStatementExpressions
+;
+
+
+#####################################################################
+# Function: ForControl
+# 概要:
+# ForControlの定義である。
+#
+# 構文:
+# | ForControl:
+# |     ForVarControl                              --- (1)
+# |     | ForInit ';' [Expression] ';' [ForUpdate] --- (2)
+#
+# 処理概要:
+# - (1)を検出した場合、ForVarControlに対するトークンを返却する
+# - (2)を検出した場合、それぞれ';'までを1文とし、トークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - 構文不備：仕様書の記述では"ForInit"は省略不可であるが、実際は省略可能である
+#   ため、省略可能として定義する
+# - ForInit, Expression, ForUpdateはそれぞれ1つのコード情報として生成する
+#   必要があるため、式情報の抽出(scantree)時にそれぞれ独立してコード情報
+#   するように指示するノード(MetaNode)を追加する
+#####################################################################
+ForControl:
+    ForVarControl
+    | ForInitOrEmpty SmcToken ExpressionOrEmpty SmcToken ForUpdateOrEmpty {
+        my @result = ('N_ForControl');
+        defined $_[1] and do { push(@result, $_[1]);  };
+        defined $_[3] and do { push(@result, create_addcode()); push(@result, $_[3]); };
+        defined $_[5] and do { push(@result, create_addcode()); push(@result, $_[5]); };
+        \@result;
+    }
+;
+
+ForInitOrEmpty:
+#    /* empty */
+    | ForInit
+;
+
+ForUpdateOrEmpty:
+#    /* empty */
+    | ForUpdate
+;
+
+#####################################################################
+# Function: ForVarControl
+# 概要:
+# ForVarControlの定義である。
+#
+# 構文:
+# | ForVarControl
+# |     ['final'] [Annotations] Type Identifier ForVarControlRest
+#
+# 処理概要:
+# - ForVarControlRestに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# - $_[4]がN_NormalForの場合、第１要素はForInit句、第２要素はExpression句、
+#   第３要素はForUpdate句が格納されている。
+#   N_NormalForではない場合、拡張for文として、$_[4]の第１要素に
+#   Expressionが格納されている
+# - ForInit, Expression, ForUpdateはそれぞれ1つのコード情報として生成する
+#   必要があるため、式情報の抽出(scantree)時にそれぞれ独立してコード情報
+#   するように指示するノード(MetaNode)を追加する
+#####################################################################
+ForVarControl:
+    Primary ForVarControlRest { create_forvar_control($_[1], $_[2]) }
+    | Modifiers Type ForVarControlRest { create_forvar_control($_[2], $_[3]) }
+;
+
+#####################################################################
+# Function: ForVarControlRest
+# 概要:
+# ForVarControlRestの定義である。
+#
+# 構文:
+# | ForVarControlRest:
+# |     VariableDeclaratorsRest ';' [Expression] ';' [ForUpdate]  --- (1)
+# |     | ':' Expression                                          --- (2)
+#
+# 処理概要:
+# - (1)を検出した場合、それぞれ';'までを1文とし、行番号とコード情報を取得する
+# - (2)を検出した場合、Expressionに対する行番号とコード情報を取得する
+#
+# 戻り値:
+# - コード情報のリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+ForVarControlRest:
+      VariableDeclarators SmcToken
+          ExpressionOrEmpty SmcToken ForUpdateOrEmpty {
+              ['N_NormalFor', $_[1], $_[3], $_[5]]
+          }
+      | IDENTIFIER CLN_TOKEN Expression { ['N_ExpandFor', $_[1], $_[3]] }
+;
+
+
+
+
+#####################################################################
+# Function: Annotations
+# 概要:
+# Annotationsの定義である。
+#
+# 構文:
+# | Annotations:
+# |     Annotation [Annotations]
+# |
+# | Annotation:
+# |     '@' TypeName [ '(' [Identifier '='] ElementValue ')' ]
+# |
+# | ElementValue:
+# |      ConditionalExpression
+# |      Annotation
+# |      ElementValueArrayInitializer
+# |
+# | ElementValueArrayInitializer:
+# |      '{' [ElementValues] [,] '}'
+# |
+# | ElementValues:
+# |      ElementValue [ElementValues]
+#
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - アノテーションはクラスではないため、情報収集の対象外とする
+# - 構文不備：TypeNameの定義が存在しない。QualifiedIdentifierとして
+#   実装する
+# - 構文不備：「[Identifier '='] ElementValue」の定義は省略可能および
+#   コンマ区切りで複数記述可能
+#####################################################################
+Annotations:
+    Annotation { undef }
+    | Annotations Annotation { undef }
+;
+
+Annotation:
+    ATMARK_TOKEN QualifiedIdentifier AnnotationBodyOrEmpty
+;
+
+AnnotationBodyOrEmpty:
+#    /* empty */
+    | LP_TOKEN RP_TOKEN
+    | LP_TOKEN AnnotationValueList RP_TOKEN
+;
+
+AnnotationValueList:
+    AnnotationValue
+    | AnnotationValueList CM_TOKEN AnnotationValue
+;
+
+AnnotationValue:
+    ElementValue
+    | IDENTIFIER EQUAL_OPR ElementValue
+;
+
+ElementValue:
+    ConditionalExpression
+    | Annotation
+    | ElementValueArrayInitializer
+;
+
+ElementValueArrayInitializer:
+    LcbToken ElementValuesOrEmpty RcbToken
+;
+
+ElementValuesOrEmpty:
+#    /* empty */
+    | ElementValues CommaOrEmpty
+;
+
+
+ElementValues:
+    ElementValue
+    | ElementValues CM_TOKEN ElementValue
+;
+
+AnnotationsOrEmpty:
+#    /* empty */
+    | Annotations
+;
+
+#####################################################################
+# Function: ForInit
+# 概要:
+# ForInitの定義である。
+#
+# 構文:
+# | ForInit:
+# |    StatementExpression Expressions
+#
+# 処理概要:
+# - コード情報を取得する
+#
+# 戻り値:
+# - コード情報のリファレンスのリスト
+#
+# 特記事項:
+# - 構文不備：仕様書上では２つめの構文が"Expression"で定義されているが、
+#   実際はMoreStatementExpressionsであるため変更して定義する
+#####################################################################
+ForInit:
+   StatementExpression MoreStatementExpressionsOrEmpty {
+       ['N_forInit', $_[1], $_[2]]
+   }
+;
+
+#####################################################################
+# Function: Modifier
+# 概要:
+# Modifierの定義である。
+#
+# 構文:
+# | Modifier:
+# |     Annotation
+# |     | public
+# |     | protected
+# |     | private
+# |     | static
+# |     | abstract
+# |     | final
+# |     | native
+# |     | synchronized
+# |     | transient
+# |     | volatile
+# |     | strictfp
+#
+# 処理概要:
+# - コードの内容を取得する
+#
+# 戻り値:
+# - コードの内容
+#
+# 特記事項:
+# なし
+#####################################################################
+Modifier:
+    Annotation
+    | PUBLIC_TOKEN
+    | PROTECTED_TOKEN
+    | PRIVATE_TOKEN
+    | STATIC_TOKEN
+    | ABSTRACT_TOKEN
+    | FINAL_TOKEN
+    | NATIVE_TOKEN
+    | SYNCHRONIZED_TOKEN
+    | TRANSIENT_TOKEN
+    | VOLATILE_TOKEN
+    | STRICTFP_TOKEN
+;
+
+Modifiers:
+    Modifier {
+        ['N_Modifier', $_[1]]
+    }
+    | Modifiers Modifier {
+        push(@{$_[1]}, $_[2]); $_[1]
+    }
+;
+
+ModifiersOrEmpty:
+#    /* empty */
+    | Modifiers
+;
+
+#####################################################################
+# Function: VariableDeclarators
+# 概要:
+# VariableDeclaratorsの定義である。
+#
+# 構文:
+# | VariableDeclarators:
+# |     VariableDeclarator { ',' VariableDeclarator }
+# |
+# | VariableDeclaratorsRest:
+# |     VariableDeclaratorRest { ',' VariableDeclarator }
+# |
+# | ConstantDeclaratorsRest:
+# |     ConstantDeclaratorRest { ',' ConstantDeclarator }
+# |
+# | VariableDeclarator:
+# |     Identifier VariableDeclaratorRest
+# |
+# | ConstantDeclarator:
+# |     Identifier ConstantDeclaratorRest
+# |
+# | VariableDeclaratorRest:
+# |     {'['']'} [ '=' VariableInitializer]
+# |
+# | ConstantDeclaratorRest:
+# |     {'['']'} '=' VariableInitializer
+#
+# 処理概要:
+# - 指定されたトークンを取得する
+#
+# 戻り値:
+# - VariableDeclaratorsとして取得したトークンのリスト
+#
+# 特記事項:
+# - 変数宣言については構文解析ではトークンを取得するのみとし、内容の
+#   解析は式解析機能で実施する
+# - variableDeclaratorの定義から、変数名(識別子)とその初期化子を取得
+#   する。この場合、構文定義が変数名、初期化子、および初期化子の繰り返し
+#   がすべて別々に定義されているため、定義間の情報受け渡しにMetaNode
+#   を利用する。MetaNodeとして、その変数の型情報と、初期化子がある
+#   場合はそのトークンリストを保持する。
+#   これらの情報は、変数情報作成処理で利用される
+#
+#####################################################################
+VariableDeclarators:
+    VariableDeclarator {
+        ['N_VariableDeclarators', $_[1]]
+    }
+    | VariableDeclarators CM_TOKEN VariableDeclarator {
+        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1]
+    }
+;
+
+#VariableDeclaratorsRest:
+#    VariableDeclaratorRest {
+#        ['N_VariableDeclaratorsRest', $_[1]]
+#    }
+#    |  VariableDeclaratorsRest CM_TOKEN VariableDeclarator {
+#        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1]
+#        
+#    }
+#;
+
+ConstantDeclaratorsRest:
+    ConstantDeclaratorRest {
+        ['N_ConstantDeclaratorsRest', $_[1]]
+    }
+    |  ConstantDeclaratorsRest CM_TOKEN ConstantDeclarator {
+        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1]
+    }
+;
+
+
+#
+# - VariableDeclaratorRestより、実データを取得するため2回shiftしている
+#   (ノード識別子、MetaNodeを捨てている)
+# - VariableDeclaratorRestの内容は、VariableDeclaratorに含める形で再生成している
+#
+VariableDeclarator:
+    IDENTIFIER {
+       ['N_VariableDeclarator',
+         ['N_MetaNode', {name => $_[1]}],
+         $_[1]
+       ]
+    }
+    | IDENTIFIER VariableDeclaratorRest {
+        my $nodename = shift @{$_[2]};
+        my $metanode = shift @{$_[2]};
+        my $decl = $metanode->[1];
+        $decl->{name} = $_[1];
+        
+        ['N_VariableDeclarator', $metanode, $_[1], @{$_[2]} ]
+    }
+;
+
+#
+# - ConstantDeclaratorRest、実データを取得するため2回shiftしている
+#   (ノード識別子、MetaNodeを捨てている)
+# - ConstantDeclaratorResttの内容は、ConstantDeclaratorに含める形で再生成している
+#
+ConstantDeclarator:
+    IDENTIFIER ConstantDeclaratorRest {
+        my $nodename = shift @{$_[2]};
+        my $metanode = shift @{$_[2]};
+        my $decl = $metanode->[1];
+        $decl->{name} = $_[1];
+
+        ['N_ConstantDeclarator',$metanode, $_[1], @{$_[2]} ]
+    }
+;
+
+
+VariableDeclaratorRest:
+    ArrayDim {
+        ['N_VariableDeclaratorRest',
+         ['N_MetaNode', {type => 'ARRAY'}],
+         $_[1]
+        ]
+    }
+    | ArrayDim  EQUAL_OPR VariableInitializer {
+        ['N_VariableDeclaratorRest',
+         ['N_MetaNode', {type => 'ARRAY', value => $_[3]}],
+         $_[1], $_[2], $_[3]
+        ]
+    }
+    | EQUAL_OPR VariableInitializer {
+        ['N_VariableDeclaratorRest',
+         ['N_MetaNode', {type => 'NORMAL', value => $_[2]}],
+         $_[1], $_[2]
+        ]
+    }
+;
+
+ConstantDeclaratorRest:
+    EQUAL_OPR VariableInitializer { 
+        ['N_ConstantDeclaratorRest',
+         ['N_MetaNode', {type => 'NORMAL', value => $_[2]}],
+         $_[1], $_[2]
+        ]
+    }
+    | ArrayDim EQUAL_OPR VariableInitializer {
+        ['N_ConstantDeclaratorRest',
+         ['N_MetaNode', {type => 'ARRAY', value => $_[3]}],
+         $_[1], $_[2], $_[3]
+        ]
+    }
+;
+
+
+
+#####################################################################
+# Function: ArrayInitializer
+# 概要:
+# ArrayInitializerの定義である。
+#
+# 構文:
+# | ArrayInitializer:
+# |     '{' [VariableInitializer {, VariableInitializer} [,]] '}'
+#
+# 処理概要:
+# - 配列の初期値をコード情報とするスコープ情報を作成する
+#
+# 戻り値:
+# - スコープ情報を示すトークンのリファレンス
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+ArrayInitializer:
+    LcbToken VariableInitializerListOrEmpty RcbToken {
+        defined $_[2] ? ['N_ScopeInfo', create_scopeinfo($_[2])] : undef
+    }
+;
+
+#####################################################################
+# Function: VariableInitializer
+# 概要:
+# VariableInitializerの定義である。
+#
+# 構文:
+# | VariableInitializer:
+# |     ArrayInitializer
+# |     | Expression
+#
+# 処理概要:
+# - VariableInitializerに対するトークンを返却する
+#
+# 戻り値:
+# - トークンのリファレンス
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+VariableInitializer:
+    ArrayInitializer
+    | Expression
+;
+
+VariableInitializerListOrEmpty:
+#    /* empty */
+    | VariableInitializerList CommaOrEmpty { $_[1]; }
+;
+
+VariableInitializerList:
+    VariableInitializer { ['N_VariableInitializerList', $_[1]]; }
+    | VariableInitializerList CM_TOKEN VariableInitializer {
+        push(@{$_[1]}, $_[2], $_[3]);
+        $_[1];
+    }
+;
+
+CommaOrEmpty:
+#    /* empty */
+    | CM_TOKEN
+;
+
+
+
+#####################################################################
+# Function: VariableDeclaratorId
+# 概要:
+# VariableDeclaratorIdの定義である。
+#
+# 構文:
+# | VariableDeclaratorId:
+# |     Identifier {[]}
+#
+# 処理概要:
+# - Identifierに指定された文字列を取得する
+#
+# 戻り値:
+# - Identifierに指定された文字列
+#
+# 特記事項:
+# なし
+#####################################################################
+VariableDeclaratorId:
+    IDENTIFIER { ['VariableDeclaratorId', $_[1]]}
+    | IDENTIFIER ArrayDim  { ['VariableDeclaratorId', $_[1], $_[2]]}
+;
+
+#####################################################################
+# Function: CompilationUnit
+# 概要:
+# CompilationUnitの定義である。
+#
+# 構文:
+#| CompilationUnit:
+#|   [[Annotations] 'package' QualifiedIdentifier  ';' ] {ImportDeclaration}
+#|   {TypeDeclaration}
+#
+# 処理概要:
+# - 当該ファイルに対するファイル情報を生成する
+# - パッケージ名を取得し、ファイル情報へ格納する
+#
+# 戻り値:
+# - ファイル情報のリファレンス
+#
+# 特記事項:
+# - ファイル情報に対するクラス情報の格納は、ClassDeclarationで実施する
+# - Annotationsの定義をPackageDeclarationOrEmptyから独立させているため
+#   TypeDeclarationsOrEmptyの先頭に記述されたAnootationを、CompilationUnit
+#   のAnnotationとして解釈する誤認識が発生する。ただし、本ツールにおいては
+#   Anootation指定は解析対象外であるため、構文解析上はこの定義とする。
+#   これは、先読みができないyaccで競合を解消するために必要な処置である
+#####################################################################
+CompilationUnit:
+    AnnotationsOrEmpty PackageDeclarationOrEmpty ImportDeclarationsOrEmpty {
+        $G_fileinfo_ref = FileInfo->new();
+        if($_[2]) {
+            $G_fileinfo_ref->packagename($_[2]);
+        }
+    }
+    TypeDeclarationsOrEmpty {
+        $G_fileinfo_ref
+    }
+;
+
+PackageDeclarationOrEmpty:
+#    /* empty */
+    | PACKAGE_TOKEN QualifiedIdentifier SmcToken {
+        normalize_token($_[2])
+    }
+;
+
+ImportDeclarationsOrEmpty:
+#    /* empty */
+    | ImportDeclarations
+;
+
+TypeDeclarationsOrEmpty:
+#    /* empty */
+    | TypeDeclarations
+;
+
+#####################################################################
+# Function: ImportDeclaration
+# 概要:
+# ImportDeclarationの定義である。
+#
+# 構文:
+#| ImportDeclaration:
+#|     'import' ['static'] Identifier {'.' Identifier} [ '.' '*'] ';'
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+ImportDeclaration:
+    IMPORT_TOKEN StaticOrEmpty QualifiedIdentifier DotAllOrEmpty SmcToken
+;
+
+StaticOrEmpty:
+#    /* empty */
+    | STATIC_TOKEN
+;
+
+DotAllOrEmpty:
+#    /* empty */
+    | DOT_TOKEN ASTARI_OPR
+;
+
+ImportDeclarations:
+    ImportDeclaration
+    | ImportDeclarations ImportDeclaration
+;
+    
+#####################################################################
+# Function: TypeDeclaration
+# 概要:
+# TypeDeclarationの定義である。
+#
+# 構文:
+# | TypeDeclaration:
+# |   ClassOrInterfaceDeclaration
+# |   | ';'
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+TypeDeclaration:
+    ClassOrInterfaceDeclaration
+    | SmcToken
+;
+
+TypeDeclarations:
+    TypeDeclaration
+    | TypeDeclarations TypeDeclaration
+;
+
+
+#####################################################################
+# Function: ClassOrInterfaceDeclaration
+# 概要:
+# ClassOrInterfaceDeclarationの定義である。
+#
+# 構文:
+# | ClassOrInterfaceDeclaration:
+# |    {Modifier} (ClassDeclaration | InterfaceDeclaration)
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+ClassOrInterfaceDeclaration:
+    ModifiersOrEmpty ClassOrInterfaceDeclarationDecl { undef }
+;
+
+ClassOrInterfaceDeclarationDecl:
+    ClassDeclaration
+    | InterfaceDeclaration
+;
+
+
+#####################################################################
+# Function: ClassDeclaration
+# 概要:
+# ClassDeclarationの定義である。
+#
+# 構文:
+# | ClassDeclaration:
+# |     NormalClassDeclaration
+# |     EnumDeclaration
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+ClassDeclaration:
+    NormalClassDeclaration
+    | EnumDeclaration
+;
+
+#####################################################################
+# Function: NormalClassDeclaration
+# 概要:
+# NormalClassDeclarationの定義である。
+#
+# 構文:
+# | NormalClassDeclaration:
+# |     'class' Identifier [TypeParameters] ['extends' Type]
+# |         ['implements' TypeList] ClassBody
+# |     NameFinalzer
+#
+# 処理概要:
+# - クラス情報を新規に作成して以下の情報を格納する
+# - <クラス名>
+# - <メソッド情報の集合>
+# - <変数情報の集合>
+# - クラス情報をファイル情報に格納する
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - NameFinalzerを定義する。NameFinalzerは、構文解析後の終了処理を
+#   実行する特別な構文であり、実体は存在せず、アクションのみ定義
+#   されている
+#####################################################################
+NormalClassDeclaration:
+    CLASS_TOKEN IDENTIFIER {
+        push(@G_classname_ident, $_[2]->{TOKEN});    
+    }
+    TypeParametersOrEmpty ExtendsTypeOrEmpty ImplementsListOrEmpty ClassBody {
+        my $classinfo = create_classinfo(\@G_classname_ident, 
+                                $_[7]->{METHOD}, $_[7]->{VARIABLE});
+        push(@{$G_fileinfo_ref->classlist()}, $classinfo);
+    }
+    NameFinalzer { undef }
+;
+
+ExtendsTypeOrEmpty:
+#    /* empty */
+    | EXTENDS_TOKEN Type
+;
+
+ImplementsListOrEmpty:
+#    /* empty */
+    | IMPLEMENTS_TOKEN TypeList
+;
+
+NameFinalzer: { pop(@G_classname_ident); };
+
+
+#####################################################################
+#Function: TypeParameters
+# 概要:
+# TypeParametersの定義である。
+#
+# 構文:
+# | TypeParameters:
+# |     '<' TypeParameter {, TypeParameter} '>'
+#
+# 処理概要:
+# なし
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+TypeParameters:
+     LT_OPR TypeParametersList GT_OPR
+;
+
+TypeParametersList:
+    TypeParameter
+    | TypeParametersList CM_TOKEN TypeParameter
+;
+
+TypeParametersOrEmpty:
+#    /* empty */
+    | TypeParameters
+;
+
+#####################################################################
+#Function: TypeParameter
+# 概要:
+# TypeParameterの定義である。
+#
+# 構文:
+# | TypeParameter:
+# |     Identifier ['extends' Bound]
+#
+# 処理概要:
+# なし
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+TypeParameter:
+    IDENTIFIER
+    | IDENTIFIER EXTENDS_TOKEN Bound
+;
+
+#####################################################################
+#Function: Bound
+# 概要:
+# Boundの定義である。
+#
+# 構文:
+# | Bound:
+# |     Type {'&' Type}
+#
+# 処理概要:
+# なし
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+Bound:
+    Type
+    | Bound AMP_OPR Type
+;
+
+
+
+#####################################################################
+# Function: EnumDeclaration
+# 概要:
+# EnumDeclarationの定義である。
+#
+# 構文:
+# | EnumDeclaration:
+# |     'enum' Identifier ['implements' TypeList] EnumBody
+# | NameFinalzer
+#
+# 処理概要:
+# - クラス情報を新規に作成して以下の情報を格納する
+# - <クラス名>
+# - <ファイル名>
+# - <メソッド情報の集合>
+# - <変数情報の集合>
+# - クラス情報を抽出対象辞書に格納する
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - NameFinalzer構文については、NormalClassDeclarationを参照のこと
+#####################################################################
+EnumDeclaration:
+    ENUM_TOKEN IDENTIFIER {
+        push (@G_classname_ident, $_[2]->{TOKEN});
+    }
+    ImplementsListOrEmpty EnumBody {
+        if(defined $_[5]) {
+            my $classinfo = create_classinfo(\@G_classname_ident, 
+                                $_[5]->{METHOD}, $_[5]->{VARIABLE});
+            push(@{$G_fileinfo_ref->classlist()}, $classinfo);
+        }
+    }
+    NameFinalzer { undef }
+;
+
+
+#####################################################################
+# Function: EnumBody
+# 概要:
+# EnumBodyの定義である。
+#
+# 構文:
+# | EnumBody:
+# | '{' [EnumConstants] [','] [EnumBodyDeclarations] '}'
+#
+# 処理概要:
+# - EnumBodyDeclarationsよりメソッド情報および変数情報の集合を取得する
+#
+# 戻り値:
+# - メソッド情報および変数情報のリストのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+EnumBody:
+    LcbToken EnumConstantsOrEmpty CommaOrEmpty EnumBodyDeclarationsOrEmpty RcbToken { $_[4] }
+;
+
+EnumConstantsOrEmpty:
+#    /* empty */
+    | EnumConstants
+;
+
+EnumBodyDeclarationsOrEmpty:
+    /* empty */ { undef }
+    | EnumBodyDeclarations
+;
+
+#####################################################################
+# Function: EnumConstants
+# 概要:
+# EnumConstantsの定義である。
+#
+# 構文:
+# | EnumConstants:
+# |     EnumConstant
+# |     | EnumConstants ',' EnumConstant
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+EnumConstants:
+    EnumConstant
+    | EnumConstants CM_TOKEN EnumConstant
+;
+
+
+#####################################################################
+# Function: EnumConstant
+# 概要:
+# EnumConstantの定義である。
+#
+# 構文:
+#  | EnumConstant:
+#  |     [Annotations] Identifier [Arguments] [ClassBody]
+#  | NameFinalzer
+#
+# 処理概要:
+# - Identifierに対するクラス情報を新規に作成して以下の情報を格納する
+# - <クラス名>
+# - <ファイル名>
+# - <メソッド情報の集合>(ClassBodyより)
+# - <変数情報の集合>(ClassBodyより)
+# - クラス情報を抽出対象辞書に格納する
+# 
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - 構文不備：The Java Language Specification, Third Edition によるとAnnotationsは
+#   省略可能となっていないが、実際の動作を確認するとAnnotationsを指定する
+#   必要がない。よって、ここでは省略可能の構文として実装する
+# - NameFinalzer構文については、NormalClassDeclarationを参照のこと
+#####################################################################
+EnumConstant:
+    AnnotationsOrEmpty IDENTIFIER {
+        push (@G_classname_ident, $_[2]->{TOKEN});
+    } 
+    ArgumentsOrEmpty ClassBodyOrEmpty {
+        if(defined $_[5]) {
+            my $classinfo = create_classinfo(\@G_classname_ident, 
+                                    $_[5]->{METHOD}, $_[5]->{VARIABLE});
+            push(@{$G_fileinfo_ref->classlist()}, $classinfo);
+            
+        }
+    }
+    NameFinalzer { undef }
+;
+
+
+
+#####################################################################
+# Function: EnumBodyDeclarations
+# 概要:
+# EnumBodyDeclarationsの定義である。
+#
+# 構文:
+# | EnumBodyDeclarations:
+# |     ';' {ClassBodyDeclaration}
+#
+# 処理概要:
+# - メソッド情報もしくは変数情報の集合を取得する
+#
+# 戻り値:
+# - メソッド情報のリファレンスもしくは変数情報のリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+EnumBodyDeclarations:
+    SmcToken ClassBodyDeclarationsOrEmpty { $_[2] }
+;
+
+
+#####################################################################
+# Function: QualifiedIdentifier
+# 概要:
+# QualifiedIdentifierの定義である。
+#
+# 構文:
+#| QualifiedIdentifier:
+#|     Identifier { '.' Identifier }
+#
+# 処理概要:
+# ・識別子(Identifier)をドットで連結した文字列を返却する
+#
+# 戻り値:
+# ・識別子(Identifier)をドットで連結した文字列
+#
+# 特記事項:
+# - Genericls指定を含む識別子の繰り返し指定の定義と競合するため、
+#   識別子の繰り返し指定は、当定義で一元的に行うようにする
+#####################################################################
+QualifiedIdentifier:
+    IDENTIFIER  { ['N_QualifiedIdentifier', $_[1] ] }
+    | QualifiedIdentifier DOT_TOKEN IDENTIFIER  {
+        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1]
+    }
+;
+
+#####################################################################
+# Function: InterfaceDeclaration
+# 概要:
+# InterfaceDeclarationの定義である。
+#
+# 構文:
+# |InterfaceDeclaration:
+# |    NormalInterfaceDeclaration
+# |    | AnnotationTypeDeclaration
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - AnnotationTypeDeclarationは、NormalInterfaceDeclarationの定義内
+#   で同時に定義する
+#####################################################################
+InterfaceDeclaration:
+    NormalInterfaceDeclaration
+;
+
+
+#####################################################################
+# Function: NormalInterfaceDeclaration
+# 概要:
+# NormalInterfaceDeclarationの定義である。
+#
+# 構文:
+# | NormalInterfaceDeclaration:
+# |     'interface' Identifier [ TypeParameters] ['extends' TypeList] 
+# |     InterfaceBody
+# | NameFinalzer
+#
+# 処理概要:
+# - クラス情報を新規に生成し、以下を格納する
+# - <インタフェース名>(クラス名として格納)
+# - <変数情報の集合>
+# - クラス情報をファイル情報に格納する
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - 「Identifier」を検出した時点でグローバル変数へ<インタフェース名>を格納する。
+#    既に識別子が格納済みである場合は「$」で連結して格納する。
+# - 「InterfaceBody」を検出した時点でグローバル変数に格納したインタフェース名を
+#   削除する。
+# - 当定義は、AnnotationTypeDeclarationの定義を含む。
+# - NameFinalzer構文については、NormalClassDeclarationを参照のこと。
+#####################################################################
+NormalInterfaceDeclaration:
+    InterfaceOrAtInterface IDENTIFIER {
+        push(@G_classname_ident, $_[2]->{TOKEN}); 
+    }
+    TypeParametersOrEmpty ExtendsTypeListOrEmpty InterfaceBody {
+        if($tokenId{$_[1]->{KEYWORD}} != $tokenId{'ATMARK_INTERFACE_TOKEN'}) {
+            my $classinfo = create_classinfo(\@G_classname_ident, 
+                                    $_[6]->{METHOD}, $_[6]->{VARIABLE});
+            push(@{$G_fileinfo_ref->classlist()}, $classinfo);
+        }
+    }
+    NameFinalzer { undef }
+;
+
+InterfaceOrAtInterface:
+    INTERFACE_TOKEN
+    | ATMARK_INTERFACE_TOKEN
+;
+
+ExtendsTypeListOrEmpty:
+#    /* empty */
+    | EXTENDS_TOKEN TypeList
+;
+
+
+#####################################################################
+# Function: TypeList:
+# 概要:
+# TypeListの定義である。
+#
+# 構文:
+# | TypeList:
+# |     Type {',' Type}
+#
+# 処理概要:
+# なし
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#####################################################################
+TypeList:
+    Type
+    | TypeList CM_TOKEN Type
+;
+
+
+#####################################################################
+#Function: AnnotationTypeDeclaration以下
+# 概要:
+# AnnotationTypeDeclarationの定義である。
+#
+# 構文:
+# | AnnotationTypeDeclaration:
+# |     '@' 'interface' Identifier AnnotationTypeBody
+# |
+# | AnnotationTypeBody:
+# |     '{' [AnnotationTypeElementDeclarations] '}'
+# |
+# | AnnotationTypeElementDeclarations:
+# |      AnnotationTypeElementDeclaration
+# |      | AnnotationTypeElementDeclarations AnnotationTypeElementDeclaration
+# |
+# | AnnotationTypeElementDeclaration:
+# |     {Modifier} AnnotationTypeElementRest
+# |
+# | AnnotationTypeElementRest:
+# |     Type Identifier AnnotationMethodOrConstantRest;
+# |     |  ClassDeclaration
+# |     |  InterfaceDeclaration
+# |     |  EnumDeclaration
+# |     |  AnnotationTypeDeclaration
+# |
+# | AnnotationMethodOrConstantRest:
+# |     AnnotationMethodRest
+# |     | AnnotationConstantRest
+# |
+# | AnnotationMethodRest:
+# |       '(' ')' [DefaultValue]
+# |
+# | AnnotationConstantRest:
+# |       VariableDeclarators
+# |
+# | DefaultValue:
+# |      'default' ElementValue
+#
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - アノテーションはクラスではないので解析対象外とし、Interface構文定義
+#   で同時に定義する
+#
+#####################################################################
+
+#!AnnotationTypeDeclaration:
+#!    ATMARK_TOKEN INTERFACE_TOKEN Identifier AnnotationTypeBody
+#!;
+#!
+#!AnnotationTypeBody:
+#!     LCB_TOKEN AnnotationTypeElementDeclarationsOrEmpty RCB_TOKEN
+#!;
+#!
+#!AnnotationTypeElementDeclarationsOrEmpty:
+#!    | AnnotationTypeElementDeclarations
+#!;
+#!
+#!AnnotationTypeElementDeclarations:
+#!    AnnotationTypeElementDeclaration
+#!    | AnnotationTypeElementDeclarations AnnotationTypeElementDeclaration
+#!;
+#!
+#!AnnotationTypeElementDeclaration:
+#!    ModifierOrEmpty AnnotationTypeElementRest
+#!;
+#!
+#!AnnotationTypeElementRest:
+#!    Type IDENTIFIER AnnotationMethodOrConstantRest
+#!    |  ClassDeclaration
+#!    |  InterfaceDeclaration
+#!#!    |  EnumDeclaration
+#!    |  AnnotationTypeDeclaration
+#!;
+#!
+#!AnnotationMethodOrConstantRest:
+#!    AnnotationMethodRest
+#!    | AnnotationConstantRest
+#!;
+#!AnnotationConstantRest:
+#!    VariableDeclarators
+#!;
+
+
+AnnotationMethodRest:
+    LP_TOKEN RP_TOKEN DefaultValue
+;
+
+
+DefaultValue:
+     DEFAULT_TOKEN ElementValue
+;
+
+
+#####################################################################
+# Function: ClassBody
+# 概要:
+# ClassBodyの定義である。
+#
+# 構文:
+# | ClassBody:
+# |     '{' {ClassBodyDeclaration} '}'
+#
+# 処理概要:
+# - メソッド情報および変数情報の集合を取得する
+#
+# 戻り値:
+# - メソッド情報および変数情報のリストのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+ClassBody:
+    LcbToken RcbToken { {} }
+    | LcbToken ClassBodyDeclarations RcbToken { $_[2] }
+;
+
+ClassBodyOrEmpty:
+#    /* empty */
+    | ClassBody
+;
+
+#####################################################################
+# Function: InterfaceBody
+# 概要:
+# InterfaceBodyの定義である。
+#
+# 構文:
+#| InterfaceBody:
+#|     '{' {InterfaceBodyDeclaration} '}'
+#
+# 処理概要:
+# - 変数情報の集合を取得する
+#
+# 戻り値:
+# - 変数情報のリストのリファレンス
+#
+# 特記事項:
+# - 返却値の構造は以下の通り
+# | {
+# |     METHOD   => メソッド情報のリストのリファレンス(ただし情報は格納されない)
+# |     VARIABLE => 変数情報のリストのリファレンス
+# | }
+#####################################################################
+InterfaceBody:
+     LcbToken RcbToken { {} }
+     | LcbToken InterfaceBodyDeclarations RcbToken {
+         $_[2]
+     }
+;
+
+InterfaceBodyDeclarations:
+    InterfaceBodyDeclaration {
+        my %variable_ref = (VARIABLE => []);
+        if(defined $_[1]) {
+            push(@{$variable_ref{VARIABLE}}, @{$_[1]});
+        }
+        \%variable_ref
+    }
+    | InterfaceBodyDeclarations InterfaceBodyDeclaration {
+        if(defined $_[2]) {
+            push(@{$_[1]->{VARIABLE}}, @{$_[2]});
+        }
+        $_[1]
+    }
+    | LineDecl
+    
+;
+
+
+#####################################################################
+# Function: ClassBodyDeclaration
+# 概要:
+# ClassBodyDeclarationの定義である。
+#
+# 構文:
+# | ClassBodyDeclaration:
+# |     ';'                     --- (1)
+# |     | ['static'] Block      --- (2)
+# |     | {Modifier} MemberDecl --- (3)
+#
+# 処理概要:
+# - (1)を検出した場合、何もしない
+# - (2)を検出した場合、メソッド情報を新規に作成して以下の情報を格納する
+# - <メソッド識別子>(右記の文字列とする 'STATIC' + シーケンシャル番号)
+# - <メソッド名>(右記の文字列とする 'block'
+# - <ルートスコープ情報>
+# - <コード情報の集合>(スコープ情報を走査して収集する)
+# - (3)を検出した場合、メソッド情報もしくは変数情報を取得する
+#
+# 戻り値:
+# - メソッド情報のリファレンスもしくは変数情報のリファレンス
+#
+# 特記事項:
+# - staticブロックは擬似的なメソッドとして解析を行う
+# - 返却値の構造は以下の通り
+# | {
+# |     METHOD   => メソッド情報のリストのリファレンス
+# |     VARIABLE => 変数情報のリストのリファレンス
+# | }
+#####################################################################
+ClassBodyDeclarations:
+    ClassBodyDeclaration {
+        my $classbody = { METHOD => [], VARIABLE => [] };
+        
+        if(defined $_[1]) {
+            if(exists($_[1]->{METHOD}) and defined $_[1]->{METHOD}) {
+                push(@{$classbody->{METHOD}}, $_[1]->{METHOD});
+            }
+            if(exists($_[1]->{VARIABLE})) {
+                push(@{$classbody->{VARIABLE}}, @{$_[1]->{VARIABLE}});
+            }
+        }
+        $classbody
+    }
+    | ClassBodyDeclarations ClassBodyDeclaration {
+        if(defined $_[2]) {
+            if(exists($_[2]->{METHOD}) and defined $_[1]->{METHOD}) {
+                push(@{$_[1]->{METHOD}}, $_[2]->{METHOD});
+            }
+            if(exists($_[2]->{VARIABLE})) {
+                push(@{$_[1]->{VARIABLE}}, @{$_[2]->{VARIABLE}});
+            }
+        }
+        $_[1]
+    }
+;
+
+#
+# クラスフィールド指定の場合は、Modifiersを含めて「型」として変数情報を生成
+# する必要があるため(行番号がModifiersの記述行となる必要があるため)、MemberDecl
+# の内容を判断して変数情報を生成する。
+# MemberDeclに含まれるメソッドについての情報は、MemberDecl内でメソッド情報
+# として生成済みである。
+#
+ClassBodyDeclaration:
+    SmcToken
+    | LineDecl
+    | StaticOrEmpty Block {
+        { METHOD => create_methodinfo('block', ['STATIC', $G_static_number++], $_[2]) }
+    }
+    | ModifiersOrEmpty MemberDecl {
+        my $memberdecl = $_[2];
+        
+        if(exists($memberdecl->{VARIABLE})) {
+            my $type         = $memberdecl->{VARIABLE}->[0];
+            my $variabledecl = $memberdecl->{VARIABLE}->[1];
+            
+            my $fieldtype = ['N_type', $_[1], $type];
+            
+            shift @{$variabledecl};
+            
+            my @varlist = ();
+            for my $current_vardecl (@{$variabledecl}) {
+                my $decl = refer_metanode($current_vardecl);
+                if(defined $decl) {
+                    my $varinfo = create_VariableInfo(
+                        $decl->{name}, $fieldtype, $decl->{type}, $decl->{value});
+                    push(@varlist, $varinfo);
+                }
+            }
+            undef $memberdecl->{VARIABLE};
+            $memberdecl->{VARIABLE} = \@varlist;
+        }
+        
+        $memberdecl;
+    }
+;
+
+ClassBodyDeclarationsOrEmpty:
+    /* empty */ { {} }
+    | ClassBodyDeclarations
+;
+
+#####################################################################
+# Function: MemberDecl
+# 概要:
+# MemberDeclの定義である。
+#
+# 構文:
+# | MemberDecl:
+# |     GenericMethodOrConstructorDecl             --- (1)
+# |     | MethodOrFieldDecl                        --- (2)
+# |     | 'void' Identifier VoidMethodDeclaratorRest --- (3)
+# |     | Identifier ConstructorDeclaratorRest     --- (4)
+# |     | InterfaceDeclaration                     --- (5)
+# |     | ClassDeclaration                         --- (6)
+#
+# 処理概要:
+# - (1)(3)(4)を検出した場合、取得したメソッド情報を取得する
+# - (2)を検出した場合、取得したメソッド情報、もしくは変数情報を取得する
+# - (5)(6)を検出した場合、何もしない
+#
+# 戻り値:
+# - メソッド情報のリファレンス、または、変数情報のリファレンスのリスト
+#
+# 特記事項:
+# - 返却値の構造は以下の通り
+# | {
+# |     METHOD   => メソッド情報のリファレンス
+# |     VARIABLE => 変数情報のリファレンスのリスト
+# | }
+#####################################################################
+MemberDecl:
+    GenericMethodOrConstructorDecl {
+        {METHOD => $_[1]}
+    }
+    | MethodDecl {
+        {METHOD => $_[1]}
+    }
+    | FieldDecl  {
+        {VARIABLE => $_[1]}
+    }
+    | VOID_TOKEN IDENTIFIER VoidMethodDeclaratorRest {
+        {METHOD => create_methodinfo($_[2]->{TOKEN}, $_[3]->{TYPELIST}, $_[3]->{SCOPE})}
+    }
+    | IDENTIFIER ConstructorDeclaratorRest {
+        {METHOD => create_methodinfo($_[1]->{TOKEN}, $_[2]->{TYPELIST}, $_[2]->{SCOPE})}
+    }
+    | InterfaceDeclaration
+    | ClassDeclaration
+;
+
+MethodDecl:
+    Type IDENTIFIER MethodDeclaratorRest {
+        create_methodinfo($_[2]->{TOKEN}, $_[3]->{TYPELIST}, $_[3]->{SCOPE})
+    }
+;
+
+FieldDecl:
+    Type VariableDeclarators SmcToken { [ $_[1], $_[2] ] }
+;
+
+
+#####################################################################
+# Function: GenericMethodOrConstructorDecl
+# 概要:
+# GenericMethodOrConstructorDeclの定義である。
+#
+# 構文:
+# | GenericMethodOrConstructorDecl:
+# |     TypeParameters GenericMethodOrConstructorRest
+#
+# 処理概要:
+# - メソッド情報を取得する
+#
+# 戻り値:
+# - メソッド情報のリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+GenericMethodOrConstructorDecl:
+    TypeParameters GenericMethodOrConstructorRest { $_[2] }
+;
+
+#####################################################################
+# Function: GenericMethodOrConstructorRest
+# 概要:
+# GenericMethodOrConstructorRestの定義である。
+#
+# 構文:
+# | GenericMethodOrConstructorRest:
+# |     (Type | 'void') Identifier MethodDeclaratorRest
+# |     | Identifier ConstructorDeclaratorRest
+#
+# 処理概要:
+# - <メソッド識別子>(メソッド名に型名を連結して作成)
+# - <メソッド名>
+# - <ルートスコープ情報>
+# - <コード情報の集合>(スコープ情報を走査して収集する)
+#
+# 戻り値:
+# - メソッド情報のリファレンス
+#
+# 特記事項:
+# - MethodDeclaratorRestまたはConstructorDeclaratorRestより、型名のリスト
+#   およびルートスコープ情報を格納したハッシュのリファレンスが取得できる
+#####################################################################
+GenericMethodOrConstructorRest:
+    Type IDENTIFIER MethodDeclaratorRest {
+        create_methodinfo($_[2]->{TOKEN}, $_[3]->{TYPELIST}, $_[3]->{SCOPE})
+    }
+    | VOID_TOKEN IDENTIFIER MethodDeclaratorRest {
+        create_methodinfo($_[2]->{TOKEN}, $_[3]->{TYPELIST}, $_[3]->{SCOPE})
+    }
+    | IDENTIFIER ConstructorDeclaratorRest {
+        create_methodinfo($_[1]->{TOKEN}, $_[2]->{TYPELIST}, $_[2]->{SCOPE})
+    }
+;
+
+
+#####################################################################
+# Function: InterfaceBodyDeclaration
+# 概要:
+# InterfaceBodyDeclarationの定義である。
+#
+# 構文:
+# | InterfaceBodyDeclaration:
+# |     ';'
+# |     | {Modifier} InterfaceMemberDecl
+#
+# 処理概要:
+# - 変数情報を新規に作成し、以降の情報を格納する
+# - 型名(Type)
+# - 変数名(Identifier)
+# - 値(InterfaceMethodOrFieldRest)
+# - 現在の行番号
+# - セミコロンを検出した場合は何もしない
+#
+# 戻り値:
+# - 変数情報のリファレンス
+#
+# 特記事項:
+# - InterfaceMemberDeclにフィールド指定が含まれる場合、その型はModifiers
+#   を含めて型とする必要があるため、ここで変数情報の生成を行う。
+# - N_ConstantDeclaratorsRestノードは、「metanode [CM_TOKEN metanode]...」
+#   という構造であるため、各metanodeに対して変数情報を生成する。
+#####################################################################
+InterfaceBodyDeclaration:
+    SmcToken {undef}
+    | ModifiersOrEmpty InterfaceMemberDecl {
+        my $varinfo = undef;
+        
+        if(defined $_[2]) {
+            my ($vartype, $ident, $memberdecl) = @{$_[2]};
+
+            if(equal_nodetype($memberdecl, 'N_ConstantDeclaratorsRest')) {
+                $varinfo = [];
+                my $type = ['N_type', $_[1], $vartype ];
+                my $is_first = 1;
+                shift @{$memberdecl};
+                
+                for my $vardecl (@{$memberdecl}) {
+                    my $decl = refer_metanode($vardecl);
+
+                    if(defined $decl) {
+                        if($is_first) {
+                            $decl->{name} = $ident;
+                            $is_first = 0;
+                        }
+                        my $one_varinfo = create_VariableInfo(
+                            $decl->{name}, $type, $decl->{type}, $decl->{value});
+                        push(@$varinfo, $one_varinfo);                        
+                    }
+                }
+            }
+        }
+        $varinfo
+    }
+;
+
+
+#####################################################################
+# Function: InterfaceMemberDecl
+# 概要:
+# InterfaceMemberDeclの定義である。
+#
+# 構文:
+# | InterfaceMemberDecl:
+# |     InterfaceMethodOrFieldDecl                            --- (1)
+# |     | InterfaceGenericMethodDecl
+# |     | 'void' Identifier VoidInterfaceMethodDeclaratorRest 
+# |     | InterfaceDeclaration                                --- (2)
+# |     | ClassDeclaration                                    --- (3)
+#
+# 処理概要:
+# - (1)を検出した場合、変数情報を取得する
+# - (2)(3)を検出した場合、クラス情報を取得し、抽出対象辞書へ格納する
+#   (実際の処理は、(2)(3)内で実施済み)
+#
+# 戻り値:
+# - 変数情報のリファレンスのリスト
+#
+# 特記事項:
+# - (1)〜(3)以外を検出した場合は、解析対象外として返却なしとする
+# 
+#####################################################################
+InterfaceMemberDecl:
+   InterfaceMethodOrFieldDecl
+   | InterfaceGenericMethodDecl {undef}
+   | VOID_TOKEN IDENTIFIER VoidInterfaceMethodDeclaratorRest  {undef} 
+   | InterfaceDeclaration  {undef}
+   | ClassDeclaration  {undef}
+;
+
+
+#####################################################################
+# Function: InterfaceMethodOrFieldDecl
+# 概要:
+# InterfaceMethodOrFieldDeclの定義である。
+#
+# 構文:
+# | InterfaceMethodOrFieldDecl:
+# |    Type Identifier InterfaceMethodOrFieldRest
+#
+# 処理概要:
+# - 変数情報を新規に作成し、以降の情報を格納する
+# - 型名(Type)
+# - 変数名(Identifier)
+# - 値(InterfaceMethodOrFieldRest)
+# - 現在の行番号
+#
+# 戻り値:
+# - 変数情報のリファレンスのリスト
+#
+# 特記事項:
+# - InterfaceMethodOrFieldRestより値が取得できない場合は、メソッド定義と
+#   解釈し、返却なしとする
+#####################################################################
+InterfaceMethodOrFieldDecl:
+    Type IDENTIFIER InterfaceMethodOrFieldRest {
+        my $fieldrest = undef;
+        
+        if(defined $_[3]) {
+            $fieldrest = [ $_[1], $_[2], $_[3] ];
+        }
+        
+        $fieldrest;
+    }
+;
+
+
+#####################################################################
+# Function: InterfaceMethodOrFieldRest
+# 概要:
+# InterfaceMethodOrFieldRestの定義である。
+#
+# 構文:
+# | InterfaceMethodOrFieldRest:
+# |     ConstantDeclaratorsRest ';'
+# |     | InterfaceMethodDeclaratorRest
+#
+# 処理概要:
+# - フィールドに指定された値を取得する
+#
+# 戻り値:
+# - フィールドに指定された値
+#
+# 特記事項:
+# - メソッド定義を取得した場合は返却なしとする
+# - フィールド定義(ConstantDeclaratorsRest)を取得した場合は、ノード化せずに
+#   取得した内容をそのまま返却するため、注意すること
+# - AnnotationMethodRestは、InterfaceDeclarationにて
+#   AnnotationTypeDeclarationの定義を代用しているため定義する
+#####################################################################
+InterfaceMethodOrFieldRest:
+    ConstantDeclaratorsRest SmcToken { $_[1] }
+    | InterfaceMethodDeclaratorRest { undef }
+    | AnnotationMethodRest { undef }
+;
+
+#####################################################################
+# Function: MethodDeclaratorRest
+# 概要:
+# MethodDeclaratorRestの定義である。
+#
+# 構文:
+# | MethodDeclaratorRest:
+# |     FormalParameters {'[' ']'} [ 'throws' QualifiedIdentifierList]
+#       ( MethodBody | ';' )
+#
+# 処理概要:
+# - FormalParametersより型名のリストを取得する
+# - MethodBodyが存在する場合、ルートスコープ情報を取得する
+#
+# 戻り値:
+# - 型名のリスト、およびルートスコープ情報を格納したハッシュのリファレンス
+#
+# 特記事項:
+# - 返却値の構造は以下の通り
+# | {
+# |     TYPELIST => 型名リストのリファレンス
+# |     SCOPE    => ルートスコープ情報のリファレンス
+# | }
+#####################################################################
+MethodDeclaratorRest:
+    FormalParameters ArrayDimOrEmpty ThrowsQIdentOrEmpty MethodBodyOrSemiColon {
+        my $method_decl = {TYPELIST => $_[1]};
+        if(equal_nodetype($_[4], 'N_MethodBody')) {
+            $method_decl->{SCOPE} = $_[4]->[1];
+        }
+        $method_decl
+    }
+;
+
+MethodBodyOrSemiColon:
+    MethodBody
+    | SmcToken
+;
+
+#####################################################################
+# Function: VoidMethodDeclaratorRest
+# 概要:
+# VoidMethodDeclaratorRestの定義である。
+#
+# 構文:
+# | VoidMethodDeclaratorRest:
+# |     FormalParameters ['throws' QualifiedIdentifierList] ( MethodBody |   ;  )
+#
+# 処理概要:
+# - FormalParametersより型名のリストを取得する
+# - MethodBodyが存在する場合、ルートスコープ情報を取得する
+#
+# 戻り値:
+# - 型名のリスト、およびルートスコープ情報を格納したハッシュのリファレンス
+#
+# 特記事項:
+# - N_MethodBodyノードの第１要素は、N_ScopeInfoノードである。
+#####################################################################
+VoidMethodDeclaratorRest:
+    FormalParameters ThrowsQIdentOrEmpty MethodBodyOrSemiColon {
+        my $method_decl = {TYPELIST => $_[1]};
+        if(equal_nodetype($_[3], 'N_MethodBody')) {
+            $method_decl->{SCOPE} = $_[3]->[1];
+        }
+        $method_decl
+    }
+;
+
+
+#####################################################################
+# Function: InterfaceMethodDeclaratorRest
+# 概要:
+# InterfaceMethodDeclaratorRestの定義である。
+#
+# 構文:
+# | InterfaceMethodDeclaratorRest:
+# |     FormalParameters {'['']'} [throws QualifiedIdentifierList] ';'
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+InterfaceMethodDeclaratorRest:
+    FormalParameters ArrayDimOrEmpty ThrowsQIdentOrEmpty SmcToken
+;
+
+#####################################################################
+# Function: InterfaceGenericMethodDecl
+# 概要:
+# InterfaceGenericMethodDeclの定義である。
+#
+# 構文:
+# | InterfaceGenericMethodDecl:
+# |     TypeParameters (Type | void) Identifier InterfaceMethodDeclaratorRest
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+InterfaceGenericMethodDecl:
+    TypeParameters Type IDENTIFIER InterfaceMethodDeclaratorRest
+    | TypeParameters VOID_TOKEN IDENTIFIER InterfaceMethodDeclaratorRest
+;
+
+#####################################################################
+# Function: VoidInterfaceMethodDeclaratorRest
+# 概要:
+# VoidInterfaceMethodDeclaratorRestの定義である。
+#
+# 構文:
+# | VoidInterfaceMethodDeclaratorRest:
+# |     FormalParameters [throws QualifiedIdentifierList]   ;
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+VoidInterfaceMethodDeclaratorRest:
+    FormalParameters ThrowsQIdentOrEmpty SmcToken
+;
+
+#####################################################################
+# Function: ConstructorDeclaratorRest
+# 概要:
+# ConstructorDeclaratorRestの定義である。
+#
+# 構文:
+# | ConstructorDeclaratorRest:
+# |     FormalParameters [throws QualifiedIdentifierList] MethodBody
+#
+# 処理概要:
+# - FormalParametersより型名のリストを取得する
+# - MethodBodyより、ルートスコープ情報を取得する
+#
+# 戻り値:
+# - 型名のリスト、およびルートスコープ情報を格納したハッシュのリファレンス
+#
+# 特記事項:
+# - [throws QualifiedIdentifierList]の情報は解析に影響しないため、
+#   情報収集対象外とする
+# - 返却値の構造は以下の通り
+# | {
+# |     TYPELIST => 型名リストのリファレンス
+# |     SCOPE    => ルートスコープ情報のリファレンス
+# | }
+#####################################################################
+
+ConstructorDeclaratorRest:
+    FormalParameters ThrowsQIdentOrEmpty MethodBody {
+        {TYPELIST => $_[1], SCOPE => $_[3]->[1]}
+    }
+;
+
+ThrowsQIdentOrEmpty:
+#    /* empty */
+    | THROWS_TOKEN QualifiedIdentifierList
+;
+
+#####################################################################
+# Function: QualifiedIdentifierList
+# 概要:
+# QualifiedIdentifierListの定義である。
+#
+# 構文:
+# | QualifiedIdentifierList:
+# |       QualifiedIdentifier {  ,   QualifiedIdentifier}
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - throws句に指定される構文であり、情報収集の対象外とする
+#####################################################################
+QualifiedIdentifierList:
+    QualifiedIdentifier {['N_QualifiedIdentifierList'], $_[1]}
+    | QualifiedIdentifierList CM_TOKEN QualifiedIdentifier {
+        push(@{$_[1]}, $_[2]); push(@{$_[1]}, $_[3]); $_[1]
+    }
+;
+
+
+
+#####################################################################
+# Function: FormalParameters
+# 概要:
+# FormalParametersの定義である。
+#
+# 構文:
+#| FormalParameters:
+#|   '(' [FormalParameterDecls] ')'
+#
+# 処理概要:
+# - 型名のリストを取得する
+#
+# 戻り値:
+# - 型名リストのリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+FormalParameters:
+    LP_TOKEN RP_TOKEN { [] }
+    | LP_TOKEN FormalParameterDeclsList RP_TOKEN { $_[2] }
+;
+
+
+#####################################################################
+# Function: FormalParameterDecls
+# 概要:
+# FormalParameterDeclsの定義である。
+#
+# 構文:
+#| FormalParameterDecls:
+#|     ['final'] [Annotations] Type FormalParameterDeclsRest]
+#
+# 処理概要:
+# - 型名のリストを取得する
+#
+# 戻り値:
+# - 型名リストのリファレンス
+#
+# 特記事項:
+# - 構文不備：定義末端の']'は不要
+#####################################################################
+
+FormalParameterDecls:
+    ModifiersOrEmpty Type FormalParameterDeclsRest {
+        [ normalize_token($_[2]) ]
+    }
+;
+
+FormalParameterDeclsList:
+    FormalParameterDecls
+    | FormalParameterDeclsList CM_TOKEN FormalParameterDecls {
+        push(@{$_[1]}, $_[3]->[0]); $_[1];
+    }
+;
+
+#####################################################################
+# Function: FormalParameterDeclsRest
+# 概要:
+# FormalParameterDeclsRestの定義である。
+#
+# 構文:
+#| FormalParameterDeclsRest:
+#|     VariableDeclaratorId [ ',' FormalParameterDecls]
+#|     | '...' VariableDeclaratorId
+#
+# 処理概要:
+# - 何もしない
+#
+# 戻り値:
+# なし
+#
+# 特記事項:
+# - メソッド定義の変数名は情報収集の対象外である
+#####################################################################
+FormalParameterDeclsRest:
+    VariableDeclaratorId
+    | DOT_TOKEN DOT_TOKEN DOT_TOKEN VariableDeclaratorId
+;
+
+
+#####################################################################
+# Function: MethodBody
+# 概要:
+# MethodBodyの定義である。
+#
+# 構文:
+# | MethodBody:
+# |     Block
+#
+# 処理概要:
+# - スコープ情報を取得する
+#
+# 戻り値:
+# - スコープ情報のリファレンス
+#
+# 特記事項:
+# なし
+#####################################################################
+MethodBody:
+    Block {['N_MethodBody', $_[1]]}
+;
+
+#####################################################################
+# Function: ForUpdate
+# 概要:
+# ForUpdateの定義である。
+#
+# 構文:
+# | ForUpdate:
+# |     StatementExpression MoreStatementExpressions
+#
+# 処理概要:
+# - コード情報を取得する
+#
+# 戻り値:
+# - コード情報のリファレンスのリスト
+#
+# 特記事項:
+# なし
+#####################################################################
+
+ForUpdate:
+    StatementExpression MoreStatementExpressionsOrEmpty {
+        ['N_ForUpdate', $_[1], $_[2]]
+    }
+;
+
+#####################################################################
+# Function: SmcToken
+# 概要:
+# SmcTokenの定義である。
+#
+# 構文:
+# | SmcToken:
+# |     SMC_TOKEN
+#
+# 処理概要:
+# - 現在の行番号を初期化(undef)とする
+#
+# 戻り値:
+# - トークン
+#
+# 特記事項:
+# なし
+#####################################################################
+SmcToken:
+    SMC_TOKEN
+;
+
+#####################################################################
+# Function: LcbToken
+# 概要:
+# LcbTokenの定義である。
+#
+# 構文:
+# | LcbToken:
+# |     LCB_TOKEN
+#
+# 処理概要:
+# - 現在の行番号を初期化(undef)とする
+#
+# 戻り値:
+# - トークン
+#
+# 特記事項:
+# なし
+#####################################################################
+LcbToken:
+    LCB_TOKEN
+;
+
+#####################################################################
+# Function: RcbToken
+# 概要:
+# RcbTokenの定義である。
+#
+# 構文:
+# | RcbToken:
+# |     RCB_TOKEN
+#
+# 処理概要:
+# - 現在の行番号を初期化(undef)とする
+#
+# 戻り値:
+# - トークン
+#
+# 特記事項:
+# なし
+#####################################################################
+RcbToken:
+    RCB_TOKEN
+;
+
+
+
+%%
+
+
+#####################################################################
+# Function: _Error
+#
+# 概要:
+# 構文エラーの起因となったトークンと行番号を埋め込んだ文字列を生成
+# する。
+# 構文エラーを検出した際に実行される。
+#
+# パラメータ:
+# _[0] - パーサオブジェクト 
+#
+# 戻り値:
+# なし
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - 文字列のフォーマットを下記とする。
+# Parse error %s:行番号 (エラーの原因となった字句)\n
+#
+#####################################################################
+sub _Error {
+    my $curval = $_[0]->YYCurval;
+    $_[0]->{YYData}->{ERRMES} = sprintf "Parse error %%s:%d (near token '%s')\n", $curval->{LINE}, $curval->{TOKEN};
+}
+
+
+#####################################################################
+# Function: _Lexer
+#
+# 概要:
+# 字句解析を実行し、1トークンの情報を返却する。パーサオブジェクトにより
+# 実行される。
+#
+# パラメータ:
+# parser - パーサオブジェクト 
+#
+# 戻り値:
+# - トークンIDとトークン情報のリスト
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - トークン情報のリストは以下の構造を持つ
+# | TOKEN    - 切り出した字句
+# | KEYWORD  - 字句に対するトークンID
+# | LINE     - トークンが記述されている行番号
+#
+#####################################################################
+sub _Lexer {
+    my ($parser) = shift;
+
+    my $result = $lex->nextToken;
+    
+    if($result) {
+        $parser->{YYData}->{LINE} = $result->{LINE};
+        return ($result->{KEYWORD}, $result);
+    }
+    else {
+        return ('', undef);
+    }
+}
+
+#####################################################################
+# Function: Run
+#
+# 概要:
+# 構文解析を実行し、ファイル情報を生成する。
+#
+# パラメータ:
+# parser - パーサオブジェクト 
+#
+# 戻り値:
+# fileinfo - ファイル情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub Run {
+    my $self = shift;
+    my $parser_debug_flg = 0;
+
+    $G_static_number = 0;
+    $G_fileinfo_ref = undef;
+    @G_classname_ident = ();
+
+    $lex->setTarget($self->{YYData}->{INPUT});
+    defined($self->{YYData}->{loglevel}) and  $self->{YYData}->{loglevel} > 10
+                                    and $parser_debug_flg = 0x1F;
+    $lex->setDebugMode($parser_debug_flg);
+
+    $self->YYParse( yylex => \&_Lexer, yyerror => \&_Error, yydebug => $parser_debug_flg);
+}
+
+
+#####################################################################
+# Function: getLexer
+#
+# 概要:
+# 字句解析処理(レクサオブジェクト)を返却する
+# 実行される。
+#
+# パラメータ:
+# なし
+#
+# 戻り値:
+# - レクサオブジェクト
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub getLexer {
+    return $lex;
+}
+
+
+#####################################################################
+# Function: scantree
+#
+# 概要:
+# 指定されたノードを走査し、式情報のリスト、およびスコープ情報の
+# リストを抽出する。各トークンの内容は、トークン情報で管理する。
+#
+# パラメータ:
+# targettree - 走査対象となるトークンリスト
+# result_ref - 出力結果のリスト(出力)
+#
+# 戻り値:
+# なし
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - 出力結果のリストは、ノードに含まれるコード情報ごとに、下記の情報を
+#   ハッシュで管理する。このハッシュ領域は、呼び出し元で準備する必要が
+#   ある。
+# | exprset   => @  抽出した式情報のリスト
+# | scopeset  => @  抽出したスコープ情報のリスト
+# | line      => $  当該式情報の行番号
+#
+# - 1つのトークンリストより複数のコード情報が生成されるケース(for文)が
+#   存在するため、出力結果のリストはコード情報ごとに上記のハッシュが
+#   格納される
+#
+# - exprlistは、当該ノードに存在する、式解析対象となる式情報のリスト
+#   である。
+#
+#####################################################################
+sub scantree {
+    my ($targettree, $result_ref) = @_;
+
+    my $current_hash = $result_ref->[-1]; # 現在のコード情報を格納する領域
+    
+    my $type = ref($targettree);
+    
+    if(!(defined $targettree and defined $type)) {
+        $_[0]->{YYData}->{ERRMES} = sprintf "Parse error %%s:-- (%s)\n", "unkown node in scantree" . defined $targettree ? $targettree : "undef value";
+        $_[0]->YYAbort;
+    }
+    #
+    # 単一要素の場合は、リスト化して式集合へ登録する
+    #
+    if($type eq 'HASH') {
+        my $current_exprset = $current_hash->{exprset}->[-1];
+        
+        my $token = get_token($targettree->{KEYWORD}, $targettree->{TOKEN});
+        push(@{$current_exprset}, $token);
+        
+        if(!exists $current_hash->{line}) {
+            $current_hash->{line} = $targettree->{LINE};
+        }
+    }
+    
+    #
+    # 配列の場合は、スコープ情報か、トークンリストか識別する
+    #
+    elsif($type eq 'ARRAY') {
+        my $current_id = undef;
+        if(scalar @$targettree != 0 and defined $targettree->[0]) {
+            $current_id = $nodetypehash{$targettree->[0]};
+        }
+        # トークンリストがノードでない場合(要素ハッシュの集合など)は、
+        # トークンリストの要素を処理する
+        # 
+        !defined $current_id and $current_id = $G_element_id;
+                #
+        # スコープ情報の場合、スコープ情報リストへ格納する
+        #
+        if($current_id == $G_ScopeInfo_id) {
+            my $current_scopeset = $current_hash->{scopeset};
+            push(@{$current_scopeset}, $targettree->[1]);
+        }
+        
+        #
+        # デリミタトークンの場合は、式情報のリストに新たなリストを追加する
+        # 現時点までで抽出したトークン群で、1つの式情報と確定する
+        #
+        elsif($current_id == $G_Delimiter_id) {
+            push(@{$current_hash->{exprset}}, []);
+        }
+        #
+        # メタデータを格納するノードの場合：
+        # 行番号を保持している場合は、当該トークンリストの行番号を、保持している
+        # 行番号とする(ただしまだ行番号が未登録の場合)
+        # 新規コード情報追加の場合、出力結果のリストに新規ハッシュを追加する
+        #
+        elsif($current_id == $G_MetaNode_id) {
+            my $metadata = $targettree->[1];
+            
+            if(exists $metadata->{line} and !exists $current_hash->{line}) {
+                $current_hash->{line} = $metadata->{line};
+            }
+            
+            if(exists $metadata->{addcode}) {
+                push(@{$result_ref}, { exprset => [[]], scopeset => []});
+            }
+        }
+        #
+        # 条件演算以外のトークンリストの場合、トークン情報のリストを
+        # 生成して、式情報リストへ格納する
+        #
+        else {
+            #
+            # トークンリストよりトークン情報を生成する
+            # トークンリストは、そのままコード情報のトークンリストとして格納
+            # されるため、shift操作などにより、要素を削除しないこと
+            #
+            my $i = 0;
+
+            # targettreeがノードの場合は、ノード名の分、ポインタをずらす
+            $current_id != $G_element_id and $i++;
+
+            while($i < scalar @{$targettree}) {
+                $current_hash = $result_ref->[-1]; # 現在のコード情報の更新を行う
+                defined($targettree->[$i]) and scantree($targettree->[$i], $result_ref);
+                $i++;
+            }
+        }
+    }
+    return;
+}
+
+#####################################################################
+# Function: scanscope
+#
+# 概要:
+# スコープ情報を走査し、格納されているトークンの集合を抽出する。
+# スコープ情報が格納するコード情報が正規化されたコードの場合、その
+# 式情報リストが保持する内容を連結した文字列を抽出したトークンリスト
+# に格納する。スコープ情報が格納するコード情報が、下位スコープ情報
+# の場合、下位スコープ情報についてさらにスコープ情報の走査を行う。
+#
+# パラメータ:
+# scopeinfo  - 走査対象となるスコープ情報
+# exprlist   - 抽出したトークンのリスト(出力)
+#
+# 戻り値:
+# なし
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - 変数情報の値がArrayInitializerの場合、平坦化する際に利用する
+#
+#####################################################################
+sub scanscope {
+    my ($scopeinfo, $exprlist) = @_;
+    
+    for my $code_set (@{$scopeinfo->codelist()}) {
+        if($code_set->codeType() == CODETYPE_CODE) {
+            for my $expr (@{$code_set->exprlist}) {
+                push(@{$exprlist}, @{$expr});
+            }
+        } else {
+            scanscope($code_set->tokenlist(0), $exprlist);
+#            push(@{$exprlist}, get_token('CM_TOKEN'));
+        }
+    }
+}
+
+
+
+#####################################################################
+# Function: create_scopeinfo
+#
+#
+# 概要:
+# スコープ情報を新規に生成する。指定されたトークンリストよりコード
+# 情報を生成し、スコープ情報に格納する。
+#
+# パラメータ:
+# tokenlist - トークンリスト
+#
+# 戻り値:
+# コード情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_scopeinfo {
+    my ($tokenlist) = @_;
+    
+    #
+    # ノード名を削除する
+    # tokenlistには、N_BlockStatementの集合が格納されている
+    #
+    shift @{$tokenlist};
+    my $scope_info = Scope->new();
+
+    #
+    # 指定されたトークンリストすべてについて、コード情報の生成を
+    # 行う
+    #
+    for my $node (@{$tokenlist}) {
+        next if !defined($node);
+        
+        #
+        # 当該トークン(ノード)がスコープ情報の場合は、その下位スコープ情報
+        # に対するコード情報を生成して、現スコープ情報に格納する
+        #
+        if(equal_nodetype($node, 'N_ScopeInfo')) {
+                    
+            my $child_scope1 = $node->[1];
+            $child_scope1->parent($scope_info);
+                    
+            push(@{$scope_info->codelist()},
+                         create_codeset_for_scope($child_scope1));
+                    
+        }
+        #
+        # 当該トークン(ノード)がスコープ情報以外の場合は、そのトークン
+        # に対するコード情報を生成して、現スコープ情報に格納する
+        #
+        else {
+            my $codeset = create_codeset_for_code($node);
+            push(@{$scope_info->codelist()}, @{$codeset->{CODE}});
+            
+            #
+            # 当該ノード内に下位スコープが存在した場合は、スコープ間の
+            # 親子関係を構築する        
+            #
+            for my $child_scope2 (@{$codeset->{SCOPE}}) {
+                $child_scope2->parent($scope_info);
+            }
+        }
+    }
+    
+    return $scope_info;
+}
+
+#####################################################################
+# Function: create_codeset_for_scope
+#
+#
+# 概要:
+# スコープ情報を格納するコード情報を新規に生成する。
+#
+# パラメータ:
+# scope - スコープ情報
+#
+# 戻り値:
+# コード情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_codeset_for_scope {
+    
+    my ($scope) = @_;
+
+    my $codeset = CodeSet->new();
+    $codeset->codeType(CODETYPE_SCOPE);
+    $codeset->tokenlist(0, $scope);
+    return $codeset;
+}
+
+
+#####################################################################
+# Function: create_codeset_for_code
+#
+#
+# 概要:
+# トークンリストを格納するコード情報を新規に生成する。トークンリスト
+# を解析して、式集合を抽出し格納する。また、式に含まれるスコープ情報を
+# 抽出した場合は、スコープ情報ごとにコード情報を生成する。
+#
+# パラメータ:
+# tokenlist - トークンリスト
+#
+# 戻り値:
+# - コード情報のリストのリファレンス、および子スコープ情報のリストのリファレンス
+#
+# 特記事項:
+# - 返却はハッシュに格納して返却する
+# | CODE  => コード情報のリストのリファレンス
+# | SCOPE => 子スコープ情報のリストのリファレンス
+#####################################################################
+sub create_codeset_for_code {
+    my ($tokenlist) = @_;
+    
+    my @codelist = ();
+    my @scopelist = ();
+
+    #
+    # トークンリストの解析結果
+    #
+    my $result_ref = [
+        {
+            exprset  => [[]],
+            scopeset => [],
+        }
+    ];
+
+    scantree($tokenlist, $result_ref);
+    
+    for my $current_codeinfo (@{$result_ref}) {
+        #
+        # トークンリストを格納するコード情報を生成する
+        #
+        my $codeset = CodeSet->new(linenumber => $current_codeinfo->{line});
+        $codeset->codeType(CODETYPE_CODE);
+        $codeset->tokenlist(0, $tokenlist);
+        push(@{$codeset->exprlist()}, @{$current_codeinfo->{exprset}});
+
+        push(@codelist, $codeset);
+
+        #
+        # トークンリストよりスコープ情報を抽出した場合は、スコープ情報を含む
+        # コード情報を生成する
+        #                
+        if(scalar @{$current_codeinfo->{scopeset}} > 0) {
+            for my $scope (@{$current_codeinfo->{scopeset}}) {
+                push(@codelist, create_codeset_for_scope($scope));
+                push(@scopelist, $scope);
+            }
+        }
+    }
+
+
+
+
+    
+    return {CODE => \@codelist, SCOPE => \@scopelist};
+}
+
+#####################################################################
+# Function: refer_metanode
+#
+#
+# 概要:
+# 指定されたノードがMetaNodeである場合、その内容を返却する
+#
+# パラメータ:
+# node    - ノード情報
+#
+# 戻り値:
+# MetaNodeを保持している場合、その内容。保持していない場合は未定義値
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub refer_metanode {
+    my ($node) = @_;
+    if(defined $node and ref($node) eq 'ARRAY'
+        and equal_nodetype($node->[1], 'N_MetaNode')) {
+        return $node->[1]->[1];
+    }
+    undef;
+}
+
+#####################################################################
+# Function: create_linenode
+#
+# 概要:
+# 指定されたトークンの行番号を保持するMetaNodeを生成する
+#
+# パラメータ:
+# token    - ノード情報
+#
+# 戻り値:
+# MetaNode - 行番号を保持するMetaNode
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_linenode {
+    my ($token) = @_;
+    return ['N_MetaNode', {line => $token->{LINE}}];
+}
+
+#####################################################################
+# Function: create_addcode
+#
+# 概要:
+# トークンリスト解析時に新規コード情報として情報を格納する指示を
+# 追加するMetaNodeを生成する
+#
+# パラメータ:
+# なし
+#
+# 戻り値:
+# MetaNode - 新規コード情報追加を指示するMetaNode
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_addcode {
+    return ['N_MetaNode', {addcode => 1}];
+}
+
+
+#####################################################################
+# Function: equal_nodetype
+#
+#
+# 概要:
+# 指定されたノードがkeywordが示すノード種別の場合、真を返却する。
+# 指定されたノードが定義されていない、またはノードではない場合は
+# 偽を返却する
+#
+# パラメータ:
+# node    - ノード情報
+# keyword - ノード種別を示す文字列 
+#
+# 戻り値:
+# 真偽値
+#
+# 例外:
+# - ノード情報の構造が不正な場合
+# - ノード種別を示す文字列が不正な場合
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub equal_nodetype {
+    my ($node, $keyword) = @_;
+    my $b = 0;
+    if(defined $node and ref($node) eq 'ARRAY'
+             and $node->[0] =~ m{N_}xms) {
+        $b = $nodetypehash{$node->[0]} == $nodetypehash{$keyword};
+    }
+    return $b;
+}
+
+#####################################################################
+# Function: create_VariableInfo
+#
+#
+# 概要:
+# 変数情報を新規に生成する。
+#
+# パラメータ:
+# name      - 変数名のトークン
+# typeinfo  - 型のトークンリスト(N_typeノード)
+# typetype  - 型の識別情報(NORMAL or ARRAYという文字列)
+# valueinfo - 値のトークンリスト(N_VariableInitializerノード)
+#
+# 戻り値:
+# 変数情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - N_VariableInitialzerノードは、単一の値と配列初期化子の２パターン
+#   の場合が考えられる。配列初期化子の場合は、normalize_tokenにより
+#   要素をコンマ区切りで連結したトークンリストに平坦化される。これは、
+#   式解析においてスコープを意識することなく解析させるための措置である。
+# - 型名として格納される内容は下記の通り
+# - String(Stringオブジェクト)
+# - StringBuffer(StringBufferオブジェクト)
+# - String[](Stringオブジェクトの配列)
+# - StringBuffer[](StringBufferの配列)
+# - 上記以外の型
+# - 値として格納される内容はトークンリストとなる
+#
+#####################################################################
+sub create_VariableInfo {
+    my ($name, $typeinfo, $typetype, $valueinfo) = @_;
+
+    #
+    # 型名を取得する
+    # String, StringBufferの型名に修飾子が付与されている場合は取り除く
+    #
+    my $result_ref = [
+        {
+            exprset  => [[]],
+            scopeset => [],
+        }
+    ];
+    scantree($typeinfo, $result_ref);
+    
+    my $line = $result_ref->[0]->{line};
+    
+    #
+    # 型名は、収集した式リストの「最初の式リストの最後の要素」を取得する
+    # - 先頭から要素を参照し、'['の直前の型名か、要素の最後の型名を取得する
+    # - '['を検出した場合は、型種別を'ARRAY'に変更する
+    my ($index, $result_of_exprset);
+    for($index = 0, $result_of_exprset = $result_ref->[0]->{exprset}->[0];
+        $index < scalar @{$result_of_exprset};
+        $index++) {
+        
+        if($result_of_exprset->[$index]->token() eq '[') {
+            $typetype = 'ARRAY';
+            last;
+        }
+    }
+    my $typename = $result_of_exprset->[$index - 1]->token();
+
+    #
+    # 型種別が配列の場合、配列を示す文字列を付与する
+    #
+    if(defined($typetype) and $typetype eq 'ARRAY') {
+        $typename = $typename . '[]';
+    }
+
+    my $var_info = VariableInfo->new(name => $name->{TOKEN}, type => $typename, linenumber => $line);
+
+    #
+    # トークンリストから値を取得する
+    # scantreeの結果として取得した式リスト、およびスコープ情報リスト内に
+    # 格納されているトークンをひとつずつ抽出し、tokenlistに格納する 
+    #
+    if(defined $valueinfo) {
+        $result_ref->[0]->{exprset} = [[]];
+        $result_ref->[0]->{scopeset} = [];
+        scantree($valueinfo, $result_ref);
+        
+        my $tokenlist = $var_info->value();
+        my $exprset = [];
+        map { push(@{$tokenlist}, $_)} @{$result_ref->[0]->{exprset}->[0]};
+        map {scanscope($_, $exprset); push(@{$tokenlist}, @{$exprset})}
+            @{$result_ref->[0]->{scopeset}};
+    
+        #
+        # 変数情報の終端を示すVARDECL_DELIMITERトークンを追加する
+        #
+        my $delimiter = get_token('VARDECL_DELIMITER');
+        push(@{$tokenlist}, $delimiter);
+    }
+    return $var_info;
+}
+
+#####################################################################
+# Function: create_methodinfo
+#
+#
+# 概要:
+# メソッド情報を新規に生成する。メソッド定義実体が存在しない場合
+# (abstract定義中のメソッドなど)の場合は、undefを返却する。
+#
+# パラメータ:
+# name      - メソッド名
+# typelist  - 型名のリスト
+# scope     - ルートスコープ情報
+#
+# 戻り値:
+# メソッド情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_methodinfo {
+    my ($name, $typelist, $scope) = @_;
+    
+    #
+    # メソッド定義実体が存在しない場合(abstract定義など)は、undefを返却
+    #
+    if(!defined $scope) {
+        return undef;
+    }
+    
+    my $method = MethodInfo->new();
+    $method->ident($name . '-' . join('-', @{$typelist}));
+    $method->name($name);
+    $method->rootscope_ref($scope->[1]);
+    
+    return $method;
+}
+
+#####################################################################
+# Function: create_classinfo
+#
+#
+# 概要:
+# クラス情報を新規に生成する
+#
+# パラメータ:
+# namelist    - クラス名のリスト
+# methodlist  - メソッド情報のリスト
+# varlist     - 変数情報のリスト
+#
+# 戻り値:
+# クラス情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# - クラス名のリストより"$"区切りで連結した文字列を生成し、クラス名として
+#   登録する
+#
+#####################################################################
+sub create_classinfo {
+    my ($namelist, $methodlist, $varlist) = @_;
+    my $classinfo = ClassInfo->new();
+    $classinfo->classname(join('$', @{$namelist}));
+    push(@{$classinfo->varlist()}, @{$varlist}) if(defined $varlist);
+    
+    my @enable_method_list = ();
+    if(defined $methodlist) {
+        @enable_method_list = grep { defined } @{$methodlist};    
+    }
+    if(scalar @enable_method_list > 0) {
+        push(@{$classinfo->methodlist()}, @enable_method_list);
+
+    } elsif(defined $varlist and scalar @{$varlist} > 0){
+        #
+        # interfaceなど、メソッドがひとつもないクラスについては変数情報
+        # に対する式解析を行わせるためダミーのメソッドを登録する
+        #
+        my $methodinfo = create_methodinfo(
+            'block', ['STATIC', $G_static_number++],
+            [ 'N_ScopeInfo', create_scopeinfo(['N_BlockStatements']) ]
+        );
+        push(@{$classinfo->methodlist()}, $methodinfo);
+    }
+    
+    return $classinfo;
+}
+
+
+
+#####################################################################
+# Function: normalize_token
+#
+#
+# 概要:
+# トークンリスト(ノード)の内容を走査して、トークンリスト内の文字列を
+# 抽出し、連結した文字列を返却する。
+#
+# パラメータ:
+# node      - トークンリスト(ノード)
+# 
+#
+# 戻り値:
+# トークンリスト内の文字列を連結した文字列
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub normalize_token {
+    my ($node) = @_;
+    my $value = '';
+    my $result_ref = [
+        {
+            exprset  => [[]],
+            scopeset => [],
+        }
+    ];
+    scantree($node, $result_ref);
+    
+    for my $expr (@{$result_ref->[0]->{exprset}}) {
+        map {$value .= $_->token() } @{$expr};
+    }
+    return $value;
+}
+
+#####################################################################
+# Function: get_token
+#
+#
+# 概要:
+# トークンIDに対するトークン情報を返却する。トークン情報オブジェクト
+# プールにオブジェクトが存在する場合は、そのトークン情報を返却する。
+# 抽出し、連結した文字列を返却する。
+#
+# パラメータ:
+# keyword - トークンID
+# token   - 切り出した文字列
+# 
+#
+# 戻り値:
+# トークンIDに対するトークン情報
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub get_token {
+    my ($keyword, $token) = @_;
+    
+    my $tokeninfo;
+    
+    #
+    # トークンIDがキャッシュ対象であるか判別する
+    #
+    if(exists $lookup{$keyword}) {
+        
+        #
+        # キャッシュ対象の場合、トークン情報をキャッシュより取得する
+        # 取得できなかった場合は、新規に作成してキャッシュへ登録する
+        #
+        $tokeninfo = $G_tokenchace{$keyword};
+        if(!defined $tokeninfo) {
+            $tokeninfo = Token->new(token => $lookup{$keyword}, id => $tokenId{$keyword});
+            $G_tokenchace{$keyword} = $tokeninfo;
+        }
+    } else {
+        #
+        # キャッシュ対象でない場合は、新規にトークン情報を生成する
+        #
+        $tokeninfo = Token->new(token => $token, id => $tokenId{$keyword});
+    }
+    return $tokeninfo;
+}
+
+
+#####################################################################
+# Function: create_forvar_control
+#
+#
+# 概要:
+# ForVarControlの定義内容より、N_ForControlノード、もしくはN_ForVarControl
+# ノードを生成し、返却する。
+#
+# パラメータ:
+# type - PrimaryTypeの内容
+# rest - ForVarControlRestの内容
+# 
+#
+# 戻り値:
+# N_ForControlノード、もしくは、N_ForVarControlノード
+#
+# 例外:
+# なし
+#
+# 特記事項:
+# なし
+#
+#####################################################################
+sub create_forvar_control {
+    my ($type, $rest) = @_;
+    my $for_ctrl;
+    if(equal_nodetype($rest, 'N_NormalFor')) {
+        my $for_init = ['N_forInit', $type, $rest->[1]];
+        $for_ctrl = ['N_ForControl', $for_init, create_addcode(), $rest->[2], create_addcode(), $rest->[3]];
+    }
+    else {
+        $for_ctrl = ['N_ForVarControl', $type, $rest->[1], ['N_Delimiter'], $rest->[2]];
+    }
+    $for_ctrl
+}
+
+
+#sub print_node {
+#    my ($node, $indent) = @_;
+#
+#    if(!defined $node) {
+#        printf "%sempty-node\n";
+#        return;
+#    }
+#
+#    my $type = Scalar::Util::reftype($node);
+#    
+#    if($type eq 'HASH') {
+#        printf "%s%s: %s \"%s\"\n", $indent, $node, $node->{KEYWORD}, $node->{TOKEN};
+#    }
+#    elsif($type eq 'ARRAY') {
+#        
+#        if(ref $node->[0] or $node->[0] !~ m{N_}xms) {
+#            print "invalid node structure: $node\n";
+#        }
+#        printf "%s%s: %s\n", $indent, $node, $node->[0];
+#        if($node->[0] =~ m{ARRAY}) {
+#            
+#            print "invalid: ", join(",", @{$node}), "\n";
+#        }
+#        if($node->[0] eq 'N_MetaNode') {
+#            return;
+#        }
+#        $indent = $indent . '  ';
+#        my @restnode = @{$node}[1 .. $#{$node}];
+#        
+#        for my $current (@restnode) {
+#            print_node($current, $indent);
+#        }
+#    }
+#    else {
+#        printf "%sunkown node -> [%s]\n", $indent, $node;
+#    }
+#    
+#}
+
+
+
+
+
