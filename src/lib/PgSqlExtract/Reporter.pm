@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #############################################################################
-#  Copyright (C) 2007-2010 NTT
+#  Copyright (C) 2007-2013 NTT
 #############################################################################
 
 # $Id: Reporter.pm,v 1.24 2006/12/29 10:46:14 okayama Exp $
@@ -72,7 +72,7 @@ my $G_starttime;
 #
 #####################################################################
 sub create_report{
-    my ($report_ref,$encoding) = @_; #引数の格納
+    my ($report_ref,$encoding,$mode) = @_; #引数の格納
     
     
     #
@@ -99,7 +99,7 @@ sub create_report{
         #
         #FILEノードの生成
         #
-        my $filenode = create_file_node($report_at_file);
+        my $filenode = create_file_node($report_at_file,$mode);
 
         #
         #REPORTノードへの登録
@@ -187,7 +187,7 @@ sub create_metadata_node {
 #
 #####################################################################
 sub create_file_node{
-    my ($report_at_file) = @_;   #引数の格納
+    my ($report_at_file,$mode) = @_;   #引数の格納
     
     my $string_item_number = 0;  # STRING_ITEMノードの個数
     my $report_item_number = 0;  # REPORT_ITEMノードの個数
@@ -212,7 +212,7 @@ sub create_file_node{
     #
     my $report_item_nodes = $report_at_file->pattern_list();
     for my $report_item (@{$report_item_nodes}) {
-        my $report_item_node = create_report_item_node($report_item);
+        my $report_item_node = create_report_item_node($report_item,$mode);
 
         $filenode->appendChild($report_item_node);
         $report_item_number++;
@@ -300,16 +300,17 @@ sub create_string_item_node {
 #
 #####################################################################
 sub create_report_item_node {
-    my ($report_at_pattern) = @_; #引数の格納
+    my ($report_at_pattern,$mode) = @_; #引数の格納
     
     
     my $itemnode = XML::LibXML::Element->new(REPORT_REPORT_ITEM_NAME);
     #
-    #id、type、levelの格納
+    #id、type、level、scoreの格納
     #
     $itemnode->setAttribute(REPORT_ID, $report_at_pattern->message_id());
     $itemnode->setAttribute(REPORT_TYPE, $report_at_pattern->pattern_type());
-    $itemnode->setAttribute(REPORT_LEVEL, $report_at_pattern->level()); 
+    $itemnode->setAttribute(REPORT_LEVEL, $report_at_pattern->level());
+    $itemnode->setAttribute(REPORT_SCORE, $report_at_pattern->score());
 
     #
     #STRUCTノードの作成
@@ -415,7 +416,32 @@ sub create_report_item_node {
     if(defined $report_at_pattern->targetdbms){
         $itemnode->appendChild($report_at_pattern->targetdbms->cloneNode(1));
     }
+    
+    #
+    #SQLモードのときのみ、REPLACEPATTERNノードをアイテムノードへ登録
+    # 
+    if($mode eq MODE_SQL){
+        my $replacepatternnode = XML::LibXML::Element->new(REPORT_REPLACE_PATTERN_NAME);
+        if(defined $report_at_pattern->replace_pattern){
+        	$replacepatternnode->appendText($report_at_pattern->replace_pattern);
 
+            #
+            #replace_flagの格納
+            #
+            $replacepatternnode->setAttribute(REPORT_REPLACE_FLAG, $report_at_pattern->replace_flag()); 
+        }
+        else{
+    	    $replacepatternnode->appendText("");
+    	
+    	    #
+            #replace_flagの格納
+            #
+    	    $replacepatternnode->setAttribute(REPORT_REPLACE_FLAG, "no replace");
+        }
+    
+        $itemnode->appendChild($replacepatternnode);
+    }
+    
     return($itemnode);
 }
 

@@ -82,6 +82,7 @@ sub checkOracleView {
         message_id   => "SQL-119-001",
         pattern_type => $plugin_ref->{pattern_type},
         report_level => "WARNING",
+        report_score => "10",
         pattern_body => $plugin_ref->{pattern_name},
         pattern_pos => $plugin_ref->{pattern_pos},
         message_body => $code . "のデータ・ディクショナリ・ビューまたは動的パフォーマンス・ビューを参照しているため、修正が必要です。",

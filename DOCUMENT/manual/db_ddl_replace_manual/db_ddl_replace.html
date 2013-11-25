@@ -1,0 +1,749 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD html 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+
+<html>
+<head>
+<title>db_ddl_replace</title>
+<link rel="home" title="db_ddl_replace" href="index.html"/>
+<link rel="stylesheet" TYPE="text/css" href="style.css"/>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+</head>
+
+
+<body>
+<h1 id="db_ddl_replace">DDL置換ツール(db_ddl_replace)利用マニュアル</h1>
+<p align="right">2013年 6月26日版</p>
+<!DOCTYPE html PUBLIC "-//W3C//DTD html 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+
+<a href="">
+<div class="index">
+<ul>
+<li>
+<a href="#synopsis">概要</a>
+<ul>
+<li><a href="#execute">実行形式</a></li>
+<li><a href="#input_file">入力ファイル</a></li>
+<li><a href="#output_file">出力ファイル</a></li>
+</ul>
+</li>
+
+<li>
+<a href="#install_uninstall">インストール/アンインストール</a>
+<ul>
+<li><a href="#requirements">動作環境</a></li>
+<li><a href="#install">インストール</a></li>
+<li><a href="#uninstall">アンインストール</a></li>
+</ul>
+</li>
+
+<li><a href="#first">置換候補抽出ツール（第1段階）</a></li>
+<ul>
+<li><a href="#1st_commandline">コマンドライン仕様</a></a>
+<ul>
+<li><a href="#1st_style">形式</a></li>
+<li><a href="#1st_input">入力</a></li>
+<li><a href="#1st_output">戻り値</a></li>
+</ul></li>
+<li><a href="#1st_use">利用方法</a>
+<ul>
+<li><a href="#1st_howto">置換候補抽出ツールの実行手順</a></li>
+<li><a href="#1st_target">出力結果の利用方法</a></li>
+</ul></li>
+</ul>
+
+<li><a href="#second">置換実行ツール（第2段階）</a></li>
+<ul>
+<li><a href="#2nd_commandline">コマンドライン仕様</a></a>
+<ul>
+<li><a href="#2nd_style">形式</a></li>
+<li><a href="#2nd_input">入力</a></li>
+<li><a href="#2nd_output">戻り値</a></li>
+</ul></li>
+<li><a href="#2nd_use">利用方法</a>
+<ul>
+<li><a href="#2nd_howto">置換実行ツールの実行手順</a></li>
+</ul>
+<li><a href="#2nd_target">出力結果の確認</a>
+</li>
+</ul>
+<li><a href="#deterioration">制約一覧</a></li>
+<li><a href="#doc_verup">マニュアル改版履歴</a></li>
+</ul>
+
+</div>
+
+<h2 id="synopsis">概要</h2>
+<p>DDL置換ツールは、「置換候補抽出ツール」と「置換実行ツール」からなります。</br>
+「置換候補抽出ツール」と「置換実行ツール」を実行することで、SQL抽出支援ツール（db_syntax_diff）（以降、抽出ツールと呼びます）の報告結果のうち、
+特定DDLの自動置換が可能になり、DBMSの移行コスト見積もり後の実作業の工数削減することができます。<p/>
+<p>DDL置換ツールは、抽出ツールパッケージに含まれます。<p/>
+<li><a href="image/db_ddl_replace_image.png">概念図</a></li>
+
+<dl>
+<li>用語一覧</li>
+<dd>
+本書で使用する用語を以下に示す。
+<ul>
+<table>
+  <tr>
+    <th>項番</th>
+    <th>名称</th>
+    <th>説明</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>SQL抽出支援ツール</td>
+    <td>Oracle上で稼働するアプリケーションをPostgreSQLへ移行する場合の修正が必要な項目を検出し、報告を行うツールを示す。</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>制御ファイル</td>
+    <td>DDL置換ツールを制御するファイルを示す。</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>置換対象SQLファイル</td>
+    <td>DDL置換ツールの処理対象となる、SQLファイルを示す。</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>整形後置換対象SQLファイル</td>
+    <td>置換対象SQLファイルのSQLをSQL整形した後のファイルを示す。</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>置換後SQLファイル</td>
+    <td>DDL置換ツールの最終生成物を示す。</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>個別置換候補ファイル</td>
+    <td>SQL抽出支援ツールの報告結果から、置換対象の情報と処理内容をCSV形式に整理したファイルを示す。</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>一括置換候補ファイル</td>
+    <td>個別置換候補ファイルの内容を機械編集するためのファイルを示す。</td>
+  </tr>
+</table>
+</ul>
+</dd>
+
+<h3 id="#execute">実行形式</h3>
+<p>DDL置換ツールは、コマンドラインで実行する単体アプリケーションです。キャラクタ・ユーザ・インタフェース(CUI)上で操作を行います。</p>
+
+<h3 id="#input_file">入力ファイル</h3>
+<p>DDL置換ツールの入力について説明します。</p>
+<ul>
+<li>DDL置換ツールの入力は、置換対象SQLファイルへのパスや置換方法などを記述した制御ファイルです。</br>
+詳細は各ツールの「コマンドライン仕様」の「入力」を参照ください。
+<ul>
+<li><a href="#1st_input">置換候補抽出ツールの「入力」</a></li>
+<li><a href="#2nd_input">置換実行ツールの「入力」</a></li>
+</ul>
+</li>
+</li>
+</ul>
+
+<h3 id="#output_file">出力ファイル</h3>
+<p>DDL置換ツールの出力について説明します。</p>
+<ul>
+<li>
+置換結果は、結果ファイル（以降、置換後SQLファイルと呼びます）に出力します。
+入力ファイルが複数であった場合、入力ファイルそれぞれに対応した置換後SQLファイルが出力されます。
+</li>
+<li>
+置換後SQLファイルには、コメントアウトされた元のSQL文と1行1ステートメントに
+整形された置換後のSQL文が出力されます。
+</li>
+</ul>
+
+<h2 id="install_uninstall">インストール/アンインストール</h2>
+
+<h3 id="requirements">動作環境</h3>
+<p>
+DDL置換ツールの動作に必要となるソフトウェアは<a href="./db_syntax_diff_manual/db_syntax_diff.html#requirements">抽出ツールの動作環境</a>
+と同じです。
+</p>
+
+<h3 id="install">インストール</h3>
+<p>
+DDL置換ツールのインストールは、置換対象SQLファイルへのアクセスが可能なマシンで実行します。</br>
+また、インストール作業は、任意の OS ユーザで実行できますが、インストールを実行した
+ OS ユーザ以外の OS ユーザがDDL置換ツールを実行する場合は、適切にアクセス権を設定する必要があります。
+ </p>
+
+<h4>インストールディレクトリ作成</h4>
+<p>
+インストールディレクトリを作成し、DDL置換ツールのアーカイブファイルを作成したディレクトリにコピーします。</br>
+なお、以降の説明では、DDL置換ツールのアーカイブファイルを『db_syntax_diff.tar.gz』、インストールディレクトリ
+として『/usr/local/db_syntax_diff』を作成し作業を行った場合を示します。
+</p>
+<pre>
+<samp>$ </samp><kbd>mkdir /usr/local/db_syntax_diff</kbd>
+<samp>$ </samp><kbd>cp /media/disk/db_syntax_diff.tar.gz /usr/local/db_syntax_diff</kbd>
+</pre>
+
+<h4>アーカイブ展開</h4>
+<p>DDL置換ツールのアーカイブファイルを tar コマンドで展開します。</p>
+
+<pre>
+<samp>$ </samp><kbd>cd /usr/local/db_syntax_diff</kbd>
+<samp>$ </samp><kbd>tar xvzf db_syntax_diff.tar.gz</kbd>
+</pre>
+
+<pre>
+[./]
+|
++--- src
+| |
+| +--- db_ddl_replace_prepare.sh .......... 置換候補抽出ツール
+| |
+| +--- db_ddl_replace_execute.sh .......... 置換実行ツール
+| |
+| +--- lib ................................ DDL置換ツールで使用するモジュールのディレクトリ
+|
++--- config
+| |
+| +--- wrapper.ctl.sample ....... 制御ファイルのサンプル
+|
++--- stylesheet ................. スタイルシートのディレクトリ
+|
++--- output ..................... 抽出ツール及びDDL置換ツールの出力格納ディレクトリ
+|
++--- tmp    ..................... 一時ファイル格納ディレクトリ
+
+</pre>
+
+<p>アーカイブ展開後のsrcディレクトリ配下のファイルに、実行権限を手動で付与してください。</p>
+<pre>
+<samp>$ </samp><kbd>chmod a+x ./src/*</kbd>
+</pre>
+
+<h4>実行環境構築</h4>
+<p><a href="./db_syntax_diff_manual/db_syntax_diff.html#install">抽出ツールのインストール</a>にある『makeの実行』、
+『環境変数の設定』、『動作確認』を行い、抽出ツールの実行環境を構築します。</p>
+
+<h4>DDL置換ツールの動作確認</h4>
+<p>DDL置換ツールの動作確認例を示します。以下のように、Usage が出力された場合は正常にインストールが完了しています。</p>
+
+<pre>
+<samp>$ </samp><kbd>db_ddl_replace_prepare.sh<br>
+/usr/local/db_syntax_diff/db_ddl_replace_prepare.sh &ltcontrolfile_path&gt</kbd>
+</pre>
+
+
+<h3 id="uninstall">アンインストール</h3>
+<h4>インストールディレクトリの削除</h4>
+<p>インストールディレクトリ全体を削除します。この作業でアンインストールは完了します。
+以下の例では、インストールディレクトリとして『/usr/local/db_syntax_diff』を作成して
+作業を行った場合を示します。</p>
+<pre>
+<samp>$ </samp><kbd>rm -rf /usr/local/db_syntax_diff</kbd>
+</pre>
+
+<h2 id="first">置換候補抽出ツール（第1段階）</h2>
+<h3 id="1st_commandline">コマンドライン仕様</h3>
+<p>置換候補抽出ツールのコマンドライン仕様を以下に示します。</p>
+
+<h4 id="1st_style">形式</h4>
+引数として、制御ファイル(CONTROLFILE_PATH)を指定します。
+<pre>
+db_ddl_replace_prepare.sh CONTROLFILE_PATH
+</pre>
+
+<h4 id="1st_input">入力</h4>
+<dl>
+<dt>CONTROLFILE_PATH<br/></dt>
+<dd>
+<li>制御ファイルへのパス(絶対パス、相対パスどちらも可)を指定します。</li>
+<li>抽出ツールのパッケージにはwrapper.ctl.sampleが含まれていますが、ファイル名に規定はありません。任意のファイル名を付けて管理してください。</li>
+<li>制御ファイルには、置換対象SQLファイルへのパスや置換方法等を記述します。</li>
+<li>具体的な設定項目は、以下の項目です。</li>
+<ul>
+<table>
+  <tr>
+    <th>設定名</th>
+    <th>説明</th>
+    <th>補足</th>
+  </tr>
+  <tr>
+    <td>TARGET_PATH</td>
+    <td>置換対象SQLファイルのディレクトリへのフルパス</td>
+    <td>(入力必須項目)</td>
+  </tr>
+  <tr>
+    <td>TARGET_EXT</td>
+    <td>置換対象SQLファイルの拡張子</td>
+    <td>設定値を与えない場合、「TARGET_PATH」で指定したディレクトリ配下のファイル全てを入力対象として読み込みます。</td>
+  </tr>
+  <tr>
+    <td>TARGET_MODE</td>
+    <td>抽出ツールの実行モード</td>
+    <td>DDL置換ツールを利用する場合、"sql"のみが選択可能です。<br>
+        (入力必須項目)</td>
+  </tr>
+  <tr>
+    <td>TARGET_CHAR</td>
+    <td>置換対象SQLファイルのエンコード</td>
+    <td>"utf8", "eucjp", "shiftjis"のいずれかを小文字で記述します。<br>
+        (入力必須項目)</td>
+  </tr>
+  <tr>
+    <td>POSTGRESQL_VERSION</td>
+    <td>移行先環境でのPostgreSQLバージョン</td>
+    <td>メジャーバージョン(上位2桁)を記述します。(例：8.4)<br>
+        (default:空文字)</td>
+  </tr>
+  <tr>
+    <td>ORAFCE_VERSION</td>
+    <td>移行先環境でのorafceバージョン</td>
+    <td>フルバージョン(3桁)を記述します。(例：3.0.0)<br>
+        (default:空文字)</td>
+  </tr>
+  <tr>
+    <td>OUTPUT_DIR_NAME</td>
+    <td>出力ディレクトリ名</td>
+    <td>抽出ツール及びDDL置換ツールによる生成物が出力されるディレクトリを指します。<br>
+        (入力必須項目)</td>
+  </tr>
+  <tr>
+    <td>STDERR_OUTPUT_FLAG</td>
+    <td>ログの出力モード<br></td>
+    <td>実行ログ及び、統計情報の出力モードは下記のいずれかを小文字で記述します。<br>
+        「both」(標準エラー出力+ファイル出力)<br>
+        「screen」(標準エラー出力のみ)<br>
+        「file」(ファイル出力のみ)<br>
+        「空文字」(出力しない)<br>
+        (default:空文字)</td>
+  </tr>
+  <tr>
+    <td>STDERR_FILE_NAME</td>
+    <td>実行ログの出力ファイル名</td>
+    <td>実行ログの出力ファイル名を記述します。<br>
+    ※実行ログとは抽出ツール及びDDL置換ツールから出力されるログを指します。</br>
+        (STDERR_OUTPUT_FLAGが「both」or「file」の場合のみ、入力必須項目)<br></td>
+  </tr>
+</table>
+</ul>
+</dd>
+
+<h4 id="1st_output">戻り値</h4>
+<dl>
+<dt>0 正常終了<br/></dt>
+<dd>置換候補抽出ツールが正常に完了したことを示します。</dd>
+<dt>1 異常終了<br/></dt>
+<dd>置換候補抽出ツールの実行時に何らかの異常が発生したことを示します。</dd>
+</dl>
+
+<h3 id="1st_use">利用方法</h3>
+DDL置換ツールの利用方法として、DDL置換ツールの実行手順および出力結果の確認方法について記述します。
+本章では、DDL置換ツールのパッケージは「/usr/local/db_syntax_diff」にインストールされているものとして記述します。
+
+<h4 id="1st_howto">置換候補抽出ツールの実行手順</h4>
+以下の手順に従ってDDL置換ツールを実行します。
+<ol>
+  <li>置換対象SQLファイルの用意</li>
+  <li>制御ファイルの作成</li>
+  <li>置換候補抽出ツールの実行</li>
+  <li>出力結果の確認</li>
+</ol>
+
+以下に、SQLファイルに対する実行例を示します。
+<ol>
+  <li>置換対象SQLファイルを用意します</li>
+      ここの例では、「/tmp/test」ディレクトリに、以下の内容ファイルを用意したとして、例を示します。
+  <table>
+  <tr><th>ファイル名</th><th>ファイル内容</th></tr>
+  <tr><td>test01.sql</td>
+      <td><pre><code>
+----------------
+-- Drop Table --
+----------------
+DROP TABLE T_TEST;
+
+------------------
+-- Create Table --
+------------------
+CREATE TABLE T_TEST (
+     KANRI_NO           NUMBER(3)
+   , ITEM_NAME          VARCHAR2(20)
+   , AMOUNT             NUMBER(5)
+);
+      </code></pre></td>
+  </tr>
+  </table></br>
+    <li>制御ファイルを作成します</li>
+      上記のソースファイルを解析するように制御ファイルを作成します。</br>
+      ここでは、configディレクトリ配下にあるwrapper.ctl.sampleを/tmpディレクトリに
+      wrapper.ctlという名前でコピーし、修正した例を示します。</br>
+      制御ファイルはDDL置換ツール、抽出ツールで共用できるため、項目「USE_GROUP_REPLACEMENT_CANDIDATE」を現時点で書いて問題ありません。
+      項目の詳細は<a href="#2nd_input">置換実行ツールの「入力」</a>を参照。
+<pre><code>$ cp /usr/local/db_syntax_diff/config/wrapper.ctl.sample /tmp/wrapper.ctl
+$ vi /tmp/wrapper.ctl
+... 編集 ...
+$ cat /tmp/wrapper.ctl
+TARGET_PATH="/tmp/test"
+TARGET_EXT="sql"
+TARGET_MODE="sql"
+TARGET_CHAR="utf8"
+POSTGRESQL_VERSION=
+ORAFCE_VERSION=
+OUTPUT_DIR_NAME="replace_test"
+STDERR_OUTPUT_FLAG="both"
+STDERR_FILE_NAME="stderr_file"
+INCLUDE_DIRECTORY_NAME=""
+USE_GROUP_REPLACEMENT_CANDIDATE="y"
+</code></pre>
+<br/>
+  <li>置換候補抽出ツールを実行します</li>
+      上記で作成した制御ファイルを指定して、置換候補抽出ツールを実行します。
+<pre><code>$ db_ddl_replace_prepare.sh /tmp/wrapper.ctl</code></pre>
+<br/>
+<li>出力結果を確認します</li>
+DDL置換ツールは、outputディレクトリ配下に制御ファイルのOUTPUT_DIR_NAMEで指定した
+ディレクトリ(上記の例ではreplace_testディレクトリ)を作成し、そのディレクトリ配下に
+candidateディレクトリとintermediateディレクトリlogディレクトリを作成します。</br>
+各ディレクトリの説明を以下に示します。</br></br>
+<table>
+  <tr>
+    <th>項番</th>
+    <th>ディレクトリ名</th>
+    <th>説明</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>candidate</td>
+    <td>個別置換候補ファイル及び、一括置換候補ファイルの格納ディレクトリ。</br>
+    このディレクトリ内のファイルを移動、リネームした場合、DDL置換ツールが正しく動作しなくなるため、それらの操作は行わないでください。</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>intermediate</td>
+    <td>整形後置換対象SQLファイルの格納ディレクトリ。</br>
+    整形後置換対象SQLファイルとは、置換対象SQLファイルをDDL置換ツールが処理可能な形に加工したファイルです。</br>
+    このディレクトリ内のファイルを移動、リネーム、編集した場合、DDL置換ツールが正しく動作しなくなるため、それらの操作は行わないでください。</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>log</td>
+    <td>ログの格納ディレクトリ。</br>
+    ディレクトリは制御ファイルのログの出力モードの内容に関わらず作成されるが、ログファイルは「both」,「file」の場合のみ出力されます。</td>
+  </tr>
+</table>
+</ol>
+<h4 id="1st_target">出力結果の利用方法</h4>
+個別置換候補ファイルおよび一括置換候補ファイルの利用方法について説明します。
+個別置換候補ファイルは置換対象DDLを個別に編集する目的で利用します。
+一方、一括置換候補ファイルは個別置換候補ファイルの内容をまとめて編集する目的で利用します。
+<h4>個別置換候補ファイルの編集</h4>
+<dl>
+<dt>個別置換候補ファイル（replacement_candidate.csv）<br/></dt>
+<dd>
+<li>利用する目的に合わせて適宜、内容を編集します。</li>
+<li>置換フラグ以外の項目は編集しないこと。編集した場合、DDL置換ツールの動作については保証しません。</li>
+<li>置換可能な項目については、デフォルト値として、置換フラグの項目に「replace」または「delete」が設定されます。</li>
+<li>エンコーディングはUTF-8のCSV形式で出力されます。出力される項目は以下の9項目です。</li>
+<ul>
+<table>
+  <tr>
+    <th>項番</th>
+    <th>項目名</th>
+    <th>補足</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>置換フラグ</td>
+    <td>本項目のみ編集可能。<br>但し、replaceをdeleteに、deleteをreplaceに変更することはできません。</br>
+「replace」（対象文字列を報告対象定義ファイルで定めた文字列に置換します）</br>
+「delete」（対象文字列を削除します）</br>
+「no replace」（何も行いません）</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>置換パターン</td>
+    <td>置換に使用する文字列が表示されます。また、削除の場合は空欄となります。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>抽出パターン</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>行番号</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>カラム位置</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>整形後置換対象SQLファイルのパス</td>
+    <td>DDL置換ツールからの相対パスが表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>メッセージID</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td>抽出パターン種別</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>9</td>
+    <td>報告内容</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+</table>
+</ul>
+</dd>
+<h4>一括置換候補ファイルの編集</h4>
+<dl>
+<dt>一括置換候補ファイル（group_replacement_candidate.csv）<br/></dt>
+<dd>
+<li>置換フラグをメッセージID毎に管理・編集する際に使用します。</li>
+<li>一括置換候補ファイルを利用する場合、個別置換候補ファイルの置換フラグの内容は上書きされます。</li>
+<li>置換フラグ以外の項目は編集しないこと。編集した場合、DDL置換ツールの動作については保証しません。</li>
+<li>置換可能な項目については、デフォルト値として、置換フラグの項目に「replace」または「delete」が設定されます。</li>
+<li>エンコーディングはUTF-8のCSV形式で出力されます。出力される項目は以下の7項目です。</li>
+<ul>
+<table>
+  <tr>
+    <th>項番</th>
+    <th>項目名</th>
+    <th>補足</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>置換フラグ</td>
+    <td>本項目のみ編集可能。<br>但し、replaceをdeleteに、deleteをreplaceに変更することはできません。</br>
+「replace」（対象文字列を報告対象定義ファイルで定めた文字列に置換します）</br>
+「delete」（対象文字列を削除します）</br></td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>メッセージID</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>置換パターン</td>
+    <td>置換に使用する文字列が表示されます。削除の場合は空欄となる。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>抽出パターン</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>抽出パターン種別</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>報告内容</td>
+    <td>抽出ツールの結果が表示されます。（編集不可）</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>該当箇所の総数</td>
+    <td>入力ファイル全体で検出した件数が表示されます。（編集不可）</td>
+  </tr>
+</table>
+</ul>
+</dd>
+
+<h2 id="second">置換実行ツール（第2段階）</h2>
+<h3 id="2nd_commandline">コマンドライン仕様</h3>
+<p>DDL置換ツールのコマンドライン仕様を以下に示します。</p>
+
+<h4 id="2nd_style">形式</h4>
+引数として、制御ファイル(CONTROLFILE_PATH)を指定します。
+<pre>
+./db_ddl_replace_execute.sh CONTROLFILE_PATH
+</pre>
+
+<h4 id="2nd_input">入力</h4>
+<dl>
+<dt>CONTROLFILE_PATH<br/></dt>
+<dd>
+<li>置換実行ツールで使用する具体的な設定項目は、以下の項目です。他の項目については<a href="#1st_input">置換候補抽出ツールの入力</a>を参照。</li>
+<li>サンプルファイルでは本項目はコメントアウトされているので、コメントアウトを外すこと。</li>
+<ul>
+<table>
+  <tr>
+    <th>設定名</th>
+    <th>説明</th>
+    <th>補足</th>
+  </tr>
+  <tr>
+    <td>USE_GROUP_REPLACEMENT_CANDIDATE</td>
+    <td>一括置換候補ファイル使用の有無</td>
+    <td>使用する場合は「y」、使用しない場合は「y」以外。空白のときは使用しません。<br>
+        (default:y)</td>
+  </tr>
+</table>
+</ul>
+</dd>
+
+<h4 id="2nd_output">戻り値</h4>
+<dl>
+<dt>0 正常終了<br/></dt>
+<dd>置換実行ツールが正常に完了したことを示します。</dd>
+<dt>1 異常終了<br/></dt>
+<dd>置換実行ツール実行時に何らかの異常が発生したことを示します。</dd>
+</dl>
+
+<h3 id="2nd_use">利用方法</h3>
+DDL置換ツールの利用方法として、DDL置換ツールの実行手順および出力結果の確認方法について記述します。
+本章では、DDL置換ツールのパッケージは「/usr/local/db_syntax_diff」にインストールされているものとして記述します。
+
+<h4 id="2nd_howto">DDL置換ツールの実行手順　※修正中の項目※</h4>
+以下の手順に従ってDDL置換ツールを実行します。
+<ol>
+  <li>個別置換候補ファイルの編集（必要に応じて実施）</li>
+  <li>一括置換候補ファイルの編集（必要に応じて実施）</li>
+  <li>置換実行ツールの実行</li>
+</ol>
+以下に、<a href="#1st_howto">置換候補抽出ツールの実行手順</a>を前提とした置換実行ツールの実行例を示します。
+<ol>
+  <li>個別置換候補ファイルの編集</li>
+  置換候補抽出ツールの実行で出力された個別置換候補ファイルを必要に応じて編集します。</br>但し、一括置換候補ファイルを
+  利用する場合、個別置換候補ファイルに書かれている置換フラグは全て一括置換候補ファイルの内容で上書きされるため、
+  個別置換候補ファイルの置換フラグの内容は無視されます。</br>
+  記載されている内容については、<a href="#1st_target">出力結果の利用方法</a>を参照。</br></br>
+  <table>
+  <tr><th>ファイル名</th><th>ファイル内容</th></tr>
+  <tr><td>replacement_candidate.csv</td>
+      <td><pre><code>
+replace,VARCHAR,(?:[^\w\d_]|\A)VARCHAR2(?:[^\w\d_]|\z),17,53,../output/replace_test/intermediate/imd_test01.sql
+,TYP-004-001,TYPE,VARCHAR2型はサポートされていません。TEXT型>に変更することで対処可能ですが、
+データは文字単位で扱われますので注意が必要です。</br>
+no replace,,(?:[^\w\d_]|\A)NUMBER(?:[^\w\d_]|\z),17,31,../output/replace_test/intermediate/imd_test01.sql
+,TYP-006-001,TYPE,NUMBER型はサポートされていません。NUMERIC型に変更することで対応可能ですが、位取りの値に、
+負数および、精度より大きい値は指定できませんので注意が必要です。 また、NUMERIC型は性能上問題となる場合がありますので
+、厳密に精度を求める必要が>ない場合はREAL型やINTEGER型など、他の型の利用を検討してください。</br>
+no replace,,(?:[^\w\d_]|\A)NUMBER(?:[^\w\d_]|\z),17,75,../output/replace_test/intermediate/imd_test01.sql
+,TYP-006-001,TYPE,NUMBER型はサポートされていません。NUMERIC型に変更することで対応可能ですが、位取りの値に、
+負数および、精度より大きい値は指定できませんので注意が必要です。 また、NUMERIC型は性能上問題となる場合がありますので、
+厳密に精度を求める必要が>ない場合はREAL型やINTEGER型など、他の型の利用を検討してください。</br>
+      </code></pre></td>
+  </tr>
+  </table></br>
+  <li>一括置換候補ファイルの編集</li>
+  置換候補抽出ツールの実行で出力された一括置換候補ファイルを必要に応じて編集します。</br>但し、制御ファイルの
+  一括置換候補ファイル使用の有無の項目が「y」以外の場合、一括置換候補ファイルは使用されません。</br>
+  記載されている内容については、<a href="#1st_target">出力結果の利用方法</a>を参照。</br></br>
+  <table>
+  <tr><th>ファイル名</th><th>ファイル内容</th></tr>
+  <tr><td>group_replacement_candidate.csv</td>
+      <td><pre><code>
+replace,TYP-004-001,VARCHAR,(?:[^\w\d_]|\A)VARCHAR2(?:[^\w\d_]|\z),TYPE,
+"VARCHAR2型はサポートされていません。TEXT型に変更することで対処可能ですが、データは文字単位で扱われますので注意が必要です。",1
+      </code></pre></td>
+  </tr>
+  </table></br>
+    <li>置換実行ツールを実行します</li>
+      上記で作成した制御ファイルを指定して、置換実行ツールを実行します。
+<pre><code>$ db_ddl_replace_execute.sh /tmp/wrapper.ctl</code></pre>
+<br/>
+</ol>
+
+
+<h3 id="2nd_target">出力結果の確認</h3>
+<h4>統計情報の確認</h4>
+制御ファイルのログの出力モードを「both」,「screen」,「file」のいずれかを指定した場合に実行ログと下記の統計情報が出力されます。</br>
+また、「both」,「file」の場合は、ログファイル「rpd_summary」として、logディレクトリに出力されます。</br>
+<pre>
+Replacement summary. 
+   |Summary of <整形後置換候補SQLファイルの相対パス>, <置換を行った総数>
+ *1|  <メッセージID>, <置換を行った個数>
+   |  …
+Summary of all, <全入力ファイルで置換を行った総数>
+</pre>
+*1 複数ファイルを入力した場合は該当箇所がファイル毎に繰り返し出力されます。
+
+<h4>置換後SQLファイルの確認</h4>
+<li>置換後SQLファイルは制御ファイルで指定されたディレクトリに出力されます。</li>
+<li>置換後SQLファイルは制御ファイルで指定されたエンコーディングで出力されます。</li>
+<li>置換後SQLファイルは1行1ステートメントとなっている。整形はユーザが任意で行ってください。</li>
+
+<h3 id="deterioration">制約一覧</h3>
+<table>
+<tr>
+	<th>項番</th><th>制約事項</th>
+</tr>
+<tr>
+	<td align="right">1</td>
+	<td><a href="./db_syntax_diff_manual/db_syntax_diff.html#deterioration">抽出ツールの制約</a>を受けます。</td>
+</tr>
+<tr>
+	<td align="right">2</td>
+	<td>DDL置換ツールが置換を実行できるDDLは報告対象定義ファイルで置換可能と定義しているもののみです。</td>
+</tr>
+<tr>
+	<td align="right">3</td>
+	<td>1ステートメントのSQLにクォート、ダブルクォートが含まれていると置換候補ファイルに
+検出されている項目であっても、置換実行に失敗する場合がある。</br>例として、以下の場合があげられます。</br>
+<ul>
+<table>
+<li>下記DDLの場合、INITRANS、MAXTRANS、STORAGE句を削除できません。</li>
+<pre>
+CREATE INDEX "schema0"."idx1" ON "schema0"."table1" ("c1")</br>
+              PCTFREE 5 INITRANS 2 MAXTRANS 255</br>
+              STORAGE(INITIAL 1054720 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS</br>
+              2147483645</br>
+              PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1 BUFFER_POOL DEFAULT)</br>
+              TABLESPACE "tbs";</br>
+</pre>
+</ul>
+</table>
+</td>
+</tr>
+<tr>
+	<td align="right">4</td>
+	<td>同じ出力先を指定して、DDL置換ツールを複数回実行することはできません。</td>
+</tr>
+<tr>
+	<td align="right">5</td>
+	<td>「置換候補抽出ツール」の出力である、整形後置換対象SQLファイル、各置換候補ファイルの移動、リネーム、編集
+	（編集可能項目以外の編集）を行った場合、DDL置換ツールの挙動は保証しません。</td>
+</tr>
+<tr>
+	<td align="right">6</td>
+	<td>「置換候補抽出ツール」、「置換実行ツール」をsrcディレクトリ配下から移動させた場合、DDL置換ツールの挙動は保証しません。</td>
+</tr>
+<tr>
+	<td align="right">7</td>
+	<td>置換対象SQLファイルのSQL内の全角空白は削除できません。</td>
+</tr>
+<tr>
+	<td align="right">8</td>
+	<td>DDL置換ツール1回の実行で、置換対象SQLファイルのファイル名が同一かつ、内容が違うのものが存在する場合は、置換できない。</td>
+</tr>
+</table>
+
+
+<h2 id="doc_verup">マニュアル改版履歴</h2>
+<table>
+<tr><th>日付</th><th>修正事項</th></tr>
+
+<tr>
+	<td align="right">2013/06/26</td>
+	<td>初版作成
+	</td>
+</tr>
+</table>
+
+<br/>
+
+<hr />
+<p class="footer">Copyright (c) 2013, NIPPON TELEGRAPH AND TELEPHONE CORPORATION</p>
+
+</body>
+</html>

@@ -18,7 +18,7 @@
 #####################################################################
 package PgSqlExtract::Analyzer;
 use PgSqlExtract::Analyzer::CParser;
-use PgSqlExtract::Analyzer::PreprocessAnalyzer qw( preprocess_analyzer_prev set_pg_sqlextract_macro );
+use PgSqlExtract::Analyzer::PreprocessAnalyzer qw( prepare_intermediate_file_list set_pg_sqlextract_macro );
 use warnings;
 use strict;
 use Carp;
@@ -236,6 +236,7 @@ sub normalize_codes{
     my $preprocessor_flg = FALSE;#前処理指令のフラグ
     my $is_preserve_comment = FALSE;  # 保持すべきコメント文字列であるかの真偽値
     my $literal_buff = "";         # 文字リテラルの一時保存領域
+    my $replaced_literal_buff = "";# 文字リテラルを"_"に置き換えて保存する一時保存領域
 
     get_loglevel() > 2 and print_log("(DEBUG 3) | [in] normalize_codes");
     #
@@ -269,6 +270,7 @@ sub normalize_codes{
             if($in_comment_flg == LITERAL
             or $in_comment_flg == SQL_LITERAL) {
                 $literal_buff .= $code_char[$char_count];
+                $replaced_literal_buff .= "_"
             }
             elsif($in_comment_flg != LITERAL_LITERAL){
                 $code .= $code_char[$char_count];
@@ -297,7 +299,17 @@ sub normalize_codes{
             
             #「--」コメント・「//」コメント・前処理指令の終了判定
             if($in_comment_flg == SIMPLE_COMMENT){
-                $in_comment_flg = NOT_COMMENT;
+                #簡易モードの「//」コメントと前処理指令の行末に"\"が存在する場合は、
+                #次行もコメントまたは前処理指令として扱う
+                #モードを限定する理由は、SQLモードの「--」コメントで行末に"\"が存在したとしても
+                #次行はコメントとしない、かつ前処理指令は存在しないからである。
+                if(${$mode} eq MODE_SIMPLE
+                and $code_char[$char_count-1] eq "\\"){
+                    next;
+                }
+                else{
+                    $in_comment_flg = NOT_COMMENT;
+                }
             }
             
             #
@@ -495,13 +507,16 @@ sub normalize_codes{
             #「'」文字のエスケープ処理判定「\」
             if($code_char[$char_count-1] eq '\\') {
                 $literal_buff .= $code_char[$char_count];
+                $replaced_literal_buff .= "_";
                 next;
             }
             #「'」文字のエスケープ処理判定「'」
             elsif($code_char[$char_count+1] eq '\'') {
                 $literal_buff .= $code_char[$char_count];
+                $replaced_literal_buff .= "_";
                 $char_count++;
                 $literal_buff .= $code_char[$char_count];
+                $replaced_literal_buff .= "_";
                 next;
             }
             else{
@@ -517,7 +532,10 @@ sub normalize_codes{
                     #リテラル一時保存領域の初期化
                     #
                     $literal_buff="";
+                } else {
+                    $code .= $replaced_literal_buff;
                 }
+                $replaced_literal_buff = "";   
                 $code .= $code_char[$char_count];
                 next;
             }
@@ -536,6 +554,7 @@ sub normalize_codes{
             if($code_char[$char_count-1] eq '\\') {
                 $in_comment_flg = LITERAL_LITERAL;
                 $literal_buff .= $code_char[$char_count];
+                $replaced_literal_buff .= "_";
                 next;
             }
             else{
@@ -553,7 +572,10 @@ sub normalize_codes{
                     #リテラル一時保存領域の初期化
                     #
                     $literal_buff="";
+                } else {
+                    $code .= $replaced_literal_buff;
                 }
+                $replaced_literal_buff = "";
                 $code .= $code_char[$char_count];
                 next;
             }
@@ -564,8 +586,10 @@ sub normalize_codes{
         and $code_char[$char_count+1] eq '"'){
             $in_comment_flg = LITERAL;
             $literal_buff .= $code_char[$char_count];
+            $replaced_literal_buff .= "_";
             $char_count++;
             $literal_buff .= $code_char[$char_count];
+            $replaced_literal_buff .= "_";
             next;
         }
         #「"」リテラル内リテラルの終了判定
@@ -585,8 +609,10 @@ sub normalize_codes{
                 #リテラル一時保存領域の初期化
                 #
                 $literal_buff="";
+            } else {
+                $code .= $replaced_literal_buff;
             }
-
+            $replaced_literal_buff = "";
             $code .= $code_char[$char_count];
             next;
         }
@@ -653,8 +679,14 @@ sub normalize_codes{
         elsif($in_comment_flg == LITERAL
         or $in_comment_flg == SQL_LITERAL ) {
             $literal_buff .= $code_char[$char_count];
+            $replaced_literal_buff .= "_";
         }
-        elsif($code_char[$char_count] eq '\\') {
+        #コメント中に"\"が存在した場合は格納しない。
+        #コメント中に"\"が存在した場合に特別な処理が必要となる場合は、
+        #「--」コメント・「//」コメント・前処理指令の終了判定で行う。
+        elsif($code_char[$char_count] eq '\\' 
+        and $in_comment_flg != SIMPLE_COMMENT 
+        and $in_comment_flg != MULTI_COMMENT ) {
             $code .= $code_char[$char_count];
         }
     }#コードの正規化ループの終端
@@ -674,7 +706,7 @@ sub normalize_codes{
 #
 # パラメータ:
 # encoding_name     - エンコード
-# file_name         - ファイル名
+# file_name         - ソースファイル名(includeファイル名ではないもの)
 # deffile_path      - 報告対象定義ファイルのパス
 #
 # 戻り値:
@@ -689,30 +721,27 @@ sub normalize_codes{
 #####################################################################
 sub create_absolute_dictionary{
     my ($encoding_name, $file_name, $include_dir_list, $deffile_path) = @_; #引数の格納
-
     my @varlist=();#プリプロセスdefine格納
     my $file_info=undef;#ファイル情報格納
     
     #
     # 中間ファイルの作成
     #
-    my @intermediate_file_list = PgSqlExtract::Analyzer::PreprocessAnalyzer::preprocess_analyzer_prev($file_name, \@varlist, $encoding_name, $include_dir_list);
-
+    my @intermediate_file_list = PgSqlExtract::Analyzer::PreprocessAnalyzer::prepare_intermediate_file_list($file_name, \@varlist, $encoding_name, $include_dir_list);
     #パーサの準備
     my $parser = get_c_parser($deffile_path);
     foreach my $intermediate_file_name (@intermediate_file_list){
-
         #
         # 入力ファイルを読み込む
         #
         my $c_strings = read_input_file($intermediate_file_name, $encoding_name);
     
         #
-        # 入力ファイル内容をJavaパーサによりパースし、ファイル情報を取得する
+        # 入力ファイル内容をCパーサによりパースし、ファイル情報を取得する
         #
         $parser->{YYData}->{INPUT} = $c_strings;
         $file_info = $parser->Run();
-    
+        PgSqlExtract::Analyzer::CParser::ref_tmp_marge(); # $G_fileinfo_ref_tmpから抽出結果を取り出す。
 
         # ファイル名を取得する
         my $pre_filename = basename($intermediate_file_name);
@@ -727,7 +756,8 @@ sub create_absolute_dictionary{
             
             # typedefを空にする
             all_clear_typedef_name();  
-            
+            PgSqlExtract::Analyzer::PreprocessAnalyzer::set_pg_sqlextract_macro();# macroの初期化をする
+
             # エラーメッセージを表示する
             croak(sprintf($parser->{YYData}->{ERRMES}, $pre_filename));
         };
@@ -750,6 +780,10 @@ sub create_absolute_dictionary{
     if(!defined $file_info){
         $file_info=CFileInfo->new();
     }
+
+## file_name(ソースのフルパス)をfile_infoのfilenameに登録する。
+## varlist(var_infoの数)が1以上のとき
+## 
     $file_info->filename($file_name);
     if(scalar @varlist > 0){
         if(!defined $file_info->varlist()){
@@ -773,6 +807,19 @@ sub create_absolute_dictionary{
     
     return $file_info;
 }
+
+#sub variable_info_add { 
+#    my ($file_name, $file_info ,$varlist_ref ) = @_;
+#    if(defined $file_info && defined $file_info->varlist()){
+#        my $var_tmp = $file_info->varlist();
+#        foreach my $var_info ( @$var_tmp ){
+#            $var_info->linenumber($filename . ":" .$var_info->linenumber());
+#            push(@{$varlist},$var_info);
+#        }
+#    }
+#    return @{$varlist};
+#}
+
 
 #####################################################################
 # Function: create_simple_dictionary

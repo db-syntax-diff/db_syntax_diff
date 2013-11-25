@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #############################################################################
-#  Copyright (C) 2007-2010 NTT
+#  Copyright (C) 2007-2013 NTT
 #############################################################################
 
 #####################################################################
@@ -56,6 +56,8 @@ our @EXPORT = qw(
         set_loglevel get_loglevel push_report print_log get_localtime
         read_input_file create_input_file_list set_chaserpattern get_chaserpattern
         %tokenId
+        DEFINITION_REPLACE_PATTERN_NAME DEFINITION_REPLACE_FLAG_NAME REPORT_REPLACE_PATTERN_NAME REPORT_REPLACE_FLAG
+        DEFINITION_MESSAGE_SCORE REPORT_SCORE 
      );
 
 #
@@ -143,6 +145,7 @@ my %tokenId = ();
 # REPORT_LINE   - 報告結果DOMツリーXX_ITEMノードアトリビュート(line)
 # REPORT_TYPE   - 報告結果DOMツリーITEMノードアトリビュート(type)
 # REPORT_LEVEL  - 報告結果DOMツリーITEMノードアトリビュート(level)
+# REPORT_SCORE  - 報告結果DOMツリーITEMノードアトリビュート(score)
 # REPORT_STRUCT_NAME    - 報告結果DOMツリーSTRUCTノード名
 # REPORT_TARGET_NAME    - 報告結果DOMツリーTARGETノード名
 # REPORT_MESSAGE_NAME   - 報告結果DOMツリーMESSAGEノード名
@@ -152,6 +155,8 @@ my %tokenId = ();
 # REPORT_VARIABLE_NAME   - 報告結果DOMツリーVARIABLEノード名
 # REPORT_LINE_NAME   - 報告結果DOMツリーLINEノード名
 # REPORT_COLUMN_NAME   - 報告結果DOMツリーCOLUMNノード名
+# REPORT_REPLACE_PATTERN_NAME   - 報告結果DOMツリーREPLACEPATTERNノード名
+# REPLACE_FLAG   - 報告結果DOMツリーREPLACEPATTERNノードアトリビュート(replace_flag)
 # DEFINITION_COMMON_NAME        - 報告結果DOMツリーCOMMON
 # DEFINITION_PATTERNDEF_NAME    - 報告結果DOMツリーPATTERNDEF
 # DEFINITION_PATID              - 報告結果DOMツリーMESSAGE
@@ -166,12 +171,15 @@ my %tokenId = ();
 # DEFINITION_MESSAGE_NAME       - 報告結果DOMツリーMESSAGE
 # DEFINITION_MESSAGE_ID         - 報告結果DOMツリーMESSAGE_ID
 # DEFINITION_MESSAGE_LEVEL      - 報告結果DOMツリーMESSAGE_LEVEL
+# DEFINITION_MESSAGE_SCORE      - 報告結果DOMツリーMESSAGE_SCORE
 # DEFINITION_FILTER             - 報告結果DOMツリーFILTER
 # DEFINITION_POS                - 報告結果DOMツリーPOS
 # DEFINITION_TARGETDBMS_NAME    - 報告結果DOMツリーTARGETDBMS
 # DEFINITION_PLUGIN_NAME        - 報告結果DOMツリーPLUGIN
 # DEFINITION_LIBRARY            - 報告結果DOMツリーLIBRARY
 # DEFINITION_PROCEDURE          - 報告結果DOMツリーPROCEDURE
+# DEFINITION_REPLACE_PATTERN_NAME   - 報告結果DOMツリーREPLACEPATTERN
+# DEFINITION_REPLACE_FLAG_NAME  - 報告結果DOMツリーREPLACE_FLAG
 # NULL  - NULL文字
 # DELETE_NODE_NAME - 削除対象ノード名
 # PATTERN_BODY_FIRST  - 抽出パターン先頭追加文字列
@@ -245,6 +253,7 @@ use constant {
     REPORT_LINE                 => "line",
     REPORT_TYPE                 => "type",
     REPORT_LEVEL                => "level",
+    REPORT_SCORE                => "score",
     REPORT_STRUCT_NAME          => "STRUCT",
     REPORT_MESSAGE_NAME         => "MESSAGE",
     REPORT_START_TIME           => "start_time",
@@ -262,6 +271,8 @@ use constant {
     REPORT_VARIABLE_NAME          => "VARIABLE",
     REPORT_LINE_NAME          => "LINE",
     REPORT_COLUMN_NAME          => "COLUMN",
+    REPORT_REPLACE_PATTERN_NAME  => "REPLACEPATTERN",
+    REPORT_REPLACE_FLAG         => "replace_flag",
     DEFINITION_COMMON_NAME      => "COMMON",
     DEFINITION_PATTERNDEF_NAME  => "PATTERNDEF",
     DEFINITION_PATID            => "patid",
@@ -276,12 +287,15 @@ use constant {
     DEFINITION_MESSAGE_NAME     => "MESSAGE",
     DEFINITION_MESSAGE_ID       => "id",
     DEFINITION_MESSAGE_LEVEL    => "level",
+    DEFINITION_MESSAGE_SCORE    => "score",
     DEFINITION_FILTER           => "filter",
     DEFINITION_POS              => "pos",
     DEFINITION_TARGETDBMS_NAME  => "TARGETDBMS",
     DEFINITION_PLUGIN_NAME      => "PLUGIN",
     DEFINITION_LIBRARY          => "library",
     DEFINITION_PROCEDURE        => "procedure",
+    DEFINITION_REPLACE_PATTERN_NAME  => "REPLACEPATTERN",
+    DEFINITION_REPLACE_FLAG_NAME  => "replace_flag",
     NULL                        => "NULL",
     DELETE_NODE_NAME            => "text|comment",
     PATTERN_BODY_FIRST          => '(?:[^\w\d_]|\A)',
@@ -676,6 +690,7 @@ struct ExtractResultsString => {
 # linenumber   - 行番号
 # pattern_type - 抽出パターン種別
 # level        - 報告レベル
+# score        - 修正に必要とされる工数ポイント
 # struct       - 抽出時に使用したパターン文字列
 # target       - 抽出対象となったSQL文字列
 # message      - 抽出パターンに対する報告内容
@@ -684,6 +699,8 @@ struct ExtractResultsString => {
 # methodname   - 抽出対象のメソッド名
 # classname    - 抽出対象のクラス名
 # targetdbms   - 辞書バージョン情報DOMツリー
+# replace_pattern - 置換後のパターン
+# replace_flag - 置換実行を判断するフラグ
 #
 # 特記事項:
 # なし
@@ -694,6 +711,7 @@ struct ExtractResultsPattern => {
     linenumber    => '$',
     pattern_type  => '$',
     level         => '$',
+    score         => '$',
     struct        => '$',
     target        => '$',
     message       => '$',
@@ -702,6 +720,8 @@ struct ExtractResultsPattern => {
     methodname    => '$',
     classname     => '$',
     targetdbms    => '$',
+    replace_pattern   => '$',
+    replace_flag   => '$',
 };
 
 
@@ -1019,6 +1039,7 @@ sub get_loglevel {
 # line_number  - 行番号
 # pattern_type - 抽出パターン種別
 # report_level - 報告レベル
+# report_score - 修正工数ポイント
 # pattern_body - 抽出パターン定義
 # message_body - メッセージ内容
 #
@@ -1036,7 +1057,7 @@ sub get_loglevel {
 
 sub push_report {
     my ($result , $filename, $message_id, $line_number, $pattern_type
-    , $report_level, $pattern_body, $message_body) = @_; #引数の格納
+    , $report_level, $report_score, $pattern_body, $message_body) = @_; #引数の格納
     
     #
     #報告結果ファイルの格納
@@ -1047,6 +1068,7 @@ sub push_report {
                 line_number  => $line_number,
                 pattern_type => $pattern_type,
                 report_level => $report_level,
+                report_score => $report_score,
                 pattern_body => $pattern_body,
                 message      => $message_body,
             }
