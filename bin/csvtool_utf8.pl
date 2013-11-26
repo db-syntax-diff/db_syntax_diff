@@ -17,9 +17,8 @@ use encoding 'utf-8';
 # 05. 非互換ID			ID
 # 06. 非互換の分類		TYPE
 # 07. エラーレベル		ERRORLV
-# 08. 移行作業工数		SCORE
-# 09. メッセージ		MESSAGE
-# 10. SQL				SQL
+# 08. メッセージ		MESSAGE
+# 09. SQL				SQL
 
 $PATHNAME	= 0;
 $CLASS		= 1;
@@ -29,10 +28,9 @@ $COLUMN		= 4;
 $ID			= 5;
 $TYPE		= 6;
 $ERRORLV	= 7;
-$SCORE      = 8;
-$MESSAGE	= 9;
-$SQL		= 10;
-$MAXCOL		= 11;
+$MESSAGE	= 8;
+$SQL		= 9;
+$MAXCOL		= 10;
 
 my @messages = ();
 my $line = "";
@@ -62,9 +60,6 @@ if ( $line = <IN> )
 
     # 非互換IDでソート
     sort_messages_by_id(@messages);
-
-    # LINE毎にSCOREを集計する。
-    sum_score_by_path_and_line(@messages);
 
     close(IN);
 }
@@ -161,59 +156,3 @@ sub sort_messages_by_id
 #	close(OUT3);
 	close(OUT4);
 }
-
-
-
-
-#
-# 各ファイルの行毎のSCOREの合計値を出力する。
-# 結果を <入力ファイル名>_score.csv に出力する。
-#
-sub sum_score_by_path_and_line{
-    my @msgs = @_;
-    my $arg_encoding = $ARGV[1];
-    if ($arg_encoding eq 'eucjp') {$arg_encoding = "euc-jp";}
-    # ソート
-    my @sort_id_score = sort { $a->[$PATHNAME] cmp $b->[$PATHNAME]    # パス名
-                              || $a->[$LINE] <=> $b->[$LINE]          # 行
-                             } @msgs;
-
-    #--------------------------
-    # 行単位でのSCORE値の算出
-    #--------------------------
-
-    # 現在読み込んでいるCSVファイルの1行分のデータ
-    my $csv_line = "";
-    # 1つ前のデータ
-    my $csv_line_pre = "";
-
-    # 初期値を設定
-    my $sum_score = 0;
-    my $compare_path = $sort_id_score[0][$PATHNAME];
-    my $compare_line = $sort_id_score[0][$LINE];
-
-    #出力ファイルのオープン
-    @extlist = ('.csv');
-    ($fn, $path, $ext) = fileparse($ARGV[0], @extlist);
-    my $outfn_score = $path . $fn . "_score.csv";
-    open(OUT5, ">:encoding($arg_encoding)" , "$outfn_score") or die "file open error.($outfn_score:$!)";
-
-    foreach $csv_line (@sort_id_score)
-    {
-        if ($compare_path ne $csv_line->[$PATHNAME] || $compare_line ne $csv_line->[$LINE])
-        {
-            print OUT5 "$sum_score,$csv_line_pre->[$SQL],$csv_line_pre->[$PATHNAME],$csv_line_pre->[$LINE]\n";
-            $compare_path = $csv_line->[$PATHNAME];
-            $compare_line = $csv_line->[$LINE];
-            $sum_score = 0;
-        }
-        $csv_line_pre = $csv_line;
-        $sum_score = $sum_score + $csv_line->[$SCORE];
-    }
-
-    print OUT5 "$sum_score,$csv_line_pre->[$SQL],$csv_line_pre->[$PATHNAME],$csv_line_pre->[$LINE]\n";
-    close(OUT5);
-
-}
-
-

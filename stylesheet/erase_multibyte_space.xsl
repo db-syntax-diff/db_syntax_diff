@@ -39,7 +39,7 @@
   <xsl:if test="contains(TARGET, '　')">
     <xsl:variable name="source" select="str:tokenize(normalize-space(@line), ':')"/>
 
-    <REPORT_ITEM id="SQL-130-001" type="SQL" level="CHECK_LOW1" score="10">
+    <REPORT_ITEM id="SQL-130-001" type="SQL" level="CHECK_LOW1">
       <SOURCE>
         <CLASS><xsl:value-of select="$source[1]"/></CLASS>
         <METHOD/>

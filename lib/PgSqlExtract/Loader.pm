@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #############################################################################
-#  Copyright (C) 2007-2013 NTT
+#  Copyright (C) 2007-2010 NTT
 #############################################################################
 
 #####################################################################
@@ -619,11 +619,6 @@ sub create_pattern_definition{
         $pattern_definition_hash{report_level} = $child_nodelist[2]->getAttribute(DEFINITION_MESSAGE_LEVEL);
 
         #
-        #REPORT_SCOREの登録
-        #
-        $pattern_definition_hash{report_score} = $child_nodelist[2]->getAttribute(DEFINITION_MESSAGE_SCORE);
-
-        #
         #MESSAGE_BODYの登録
         #
         $pattern_definition_hash{message_body} = $child_nodelist[2]->textContent;
@@ -639,29 +634,14 @@ sub create_pattern_definition{
         $pattern_definition_hash{procedure} = $child_nodelist[2]->getAttribute(DEFINITION_PROCEDURE);
     }
 
-    #
-    #REPLACEPATTERNノードの取得
-    #
-    if(defined $child_nodelist[3] and $child_nodelist[3]->nodeName eq DEFINITION_REPLACE_PATTERN_NAME){
-        #
-        #REPLACE_FLAGの登録
-        #
-        $pattern_definition_hash{replace_flag} = $child_nodelist[3]->getAttribute(DEFINITION_REPLACE_FLAG_NAME);
-       
-        #
-        #REPLACEPATTERNの登録
-        #
-        $pattern_definition_hash{replace_pattern} = $child_nodelist[3]->textContent;
-        
-    }
-      
+
     #
     #TARGETDBMSノードの取得
     #
     if($child_nodelist[$#child_nodelist]->nodeName eq DEFINITION_TARGETDBMS_NAME){
         $pattern_definition_hash{targetdbms} = $child_nodelist[$#child_nodelist];
     }
-      
+        
     return(\%pattern_definition_hash);
 }
 
@@ -759,7 +739,7 @@ __DATA__
   <xsd:element name="PLUGIN" type="PluginType"/>
   <xsd:element name="TARGETDBMS" type="TargetDBMSType"/>
   <xsd:element name="DBMS" type="DBMSType"/>
-  <xsd:element name="REPLACEPATTERN" type="ReplacePatternType"/>
+
   <!-- Definition for DEFINITION NODE -->
   <xsd:element name="DEFINITION">
     <xsd:complexType>
@@ -795,7 +775,6 @@ __DATA__
         <xsd:element ref="KEYWORDDEF" minOccurs="1" maxOccurs="unbounded"/>
         <xsd:element ref="PLUGIN" minOccurs="1" maxOccurs="1"/>
       </xsd:choice>
-      <xsd:element ref="REPLACEPATTERN" minOccurs="0" maxOccurs="1"/>
       <xsd:element ref="TARGETDBMS" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
     <xsd:attribute name="patid" type="xsd:string" use="required"/>
@@ -826,7 +805,6 @@ __DATA__
         <xsd:element ref="MESSAGE" minOccurs="1" maxOccurs="1"/>
         <xsd:element ref="PLUGIN" minOccurs="1" maxOccurs="1"/>
       </xsd:choice>
-      <xsd:element ref="REPLACEPATTERN" minOccurs="0" maxOccurs="1"/>
       <xsd:element ref="TARGETDBMS" minOccurs="0" maxOccurs="1"/>
     </xsd:sequence>
     <xsd:attribute name="pos" type="xsd:string" use="required"/>
@@ -839,7 +817,6 @@ __DATA__
       <xsd:extension base="xsd:string">
         <xsd:attribute name="id" type="xsd:string" use="required"/>
         <xsd:attribute name="level" type="xsd:string" use="required"/>
-        <xsd:attribute name="score" type="xsd:integer" use="required"/>
         </xsd:extension>
       </xsd:simpleContent>
   </xsd:complexType>
@@ -872,15 +849,6 @@ __DATA__
       <xsd:element name="PRODUCT" type="xsd:string" minOccurs="1" maxOccurs="1"/>
       <xsd:element name="VERSION" type="xsd:string" minOccurs="1" maxOccurs="1"/>
     </xsd:sequence>
-  </xsd:complexType>
-
-  <!-- Definition for REPLACEPATTERN NODE -->
-  <xsd:complexType name="ReplacePatternType">
-    <xsd:simpleContent>
-      <xsd:extension base="xsd:string">
-        <xsd:attribute name="replace_flag" type="xsd:string" use="required"/>
-      </xsd:extension>
-    </xsd:simpleContent>
   </xsd:complexType>
 
 </xsd:schema>

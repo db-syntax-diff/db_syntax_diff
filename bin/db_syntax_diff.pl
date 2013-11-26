@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #############################################################################
-#  Copyright (C) 2008-2013 NTT
+#  Copyright (C) 2008-2011 NTT
 #############################################################################
 
 #####################################################################
@@ -32,7 +32,7 @@ use PgSqlExtract::Analyzer qw(analyze_input_files);
 use PgSqlExtract::InputAnalyzer qw(analyze_input_files_java create_target_dictionary);
 use PgSqlExtract::Extractor qw(extract_pattern);
 use PgSqlExtract::Reporter qw(set_metadata set_starttime set_finishtime 
-create_report write_report write_report_by_plane);
+                           create_report write_report write_report_by_plane);
 use PgSqlExtract::Common;
 use utf8;
 
@@ -173,7 +173,7 @@ sub main {
         # 実行終了時間の取得およびReporterへの設定も同時に行う
         #
         get_loglevel() > 0 and print_log('(INFO) [start]  creating report.');
-        my $report_dom = create_report($result_ref, $options->{encodingname},$options->{mode});
+        my $report_dom = create_report($result_ref, $options->{encodingname});
         set_finishtime($report_dom, get_localtime());
         get_loglevel() > 0 and print_log('(INFO) [finish] creating report.');
         
@@ -483,24 +483,24 @@ sub analyze_option {
 sub printUsage {
 	print STDOUT <<_USAGE_;
 
-db_syntax_diff version 3.0
+db_syntax_diff version 2.0
 The SQL analyzer for converting to PostgreSQL.
 
 Usage:db_syntax_diff.pl [-e encodingname][-d definition-file]
 [-i inputsourcedir[,suffix1[,suffix2]...] ]
 [-o outfile][-f filterword][-m modename]
-[-I includedir[,includedir1[,includedir2]...]][-h][-v [loglevel]]
+[-I includedir[,includedir1[,includedir2]...]][-h][-v]
 [inputfilename]...
 
-    -e encodingname,    --encoding=encodingname   File encoding. The value which can be specified is "utf8" and "shiftjis" and "eucjp". [default: eucjp]
-    -d definition-file, --define=definition-file  Definition-file file name. [default: <install_directory>/config/extractdef.xml]
-    -i inputsourcedir,  --input=inputsourcedir    Input-file directry.
-    -o outfile,    --output=outfile      Output-file file name. [default: STDOUT]
-    -f filterword, --filter=filterword   Pattern filterword. The value which can be specified is "oracle8" and "oracle8i". [default: ALL]
-    -m modename,   --mode=modename       File type of source file. The value which can be specified is "c" and "sql" and "cpp" and "java". [default: java]
-    -I includedir, --Include=includedir  Add the directory includedir to the list of directories to be searched for header files. [default: ./]
-    -h, --help     Print usage and exit.
-    -v, --verbose  Print progress of the practice to STDERR. The value which can be specified is "1" and "3" and "5" and "7". [default: none]
+    -e encodingname, --encoding=encodingname  File encoding. The value which can be specified is "utf8" and "shiftjis" and "eucjp". [default: eucjp]
+    -d definition-file, --define=definition-file Definition-file file name. [default: <install_directory>/config/extractdef.xml]
+    -i inputsourcedir, --input=inputsourcedir  Input-file directry.
+    -o outfile, --output=outfile     Output-file file name. [default: STDOUT]
+    -f filterword, --filter=filterword    Pattern filterword. The value which can be specified is "oracle8" and "oracle8i". [default: ALL]
+    -m modename, --mode=modename     File type of source file. The value which can be specified is "c" and "sql" and "cpp" and "java". [default: java]
+    -I includedir, --Include=includedir    Add the directory includedir to the list of directories to be searched for header files. [default: ./]
+    -h, --help    Print usage and exit.
+    -v, --verbose
     inputfilename  Input-file file name.
 
 _USAGE_

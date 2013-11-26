@@ -23,42 +23,13 @@ fi
 mkdir -p "$OUTDIR";
 mkdir -p "$TMPDIR";
 STYLEDIR="../stylesheet"
-
-#echo $STDERR_OUTPUT_FLAG
 # 1. execute db_syntax_diff
 #    > $TMPDIR/tmp.xml
-
-# オプションを変数化する
-option="-e ${TARGET_CHAR} -i ${TARGET_PATH},${TARGET_EXT} -o ${TMPDIR}/tmp.xml -m ${TARGET_MODE}"
-
-# ヘッダファイルの存在箇所が設定されていれば-Iオプションを追加する
-if [ -n "${INCLUDE_DIRECTORY_NAME}" ]; then
-   option="${option} -I ${INCLUDE_DIRECTORY_NAME}"
-fi
-
-# ログの出力の仕方により、-vオプションの内容を変更する
-if [ "${STDERR_OUTPUT_FLAG}" = "both" ]; then
-   option="${option} -v 1 2>&1 | tee ${OUTDIR}/${STDERR_FILE_NAME}"
-elif [ "${STDERR_OUTPUT_FLAG}" = "screen" ]; then
-   option="${option} -v"
-elif [ "${STDERR_OUTPUT_FLAG}" = "file" ]; then
-   option="${option} -v 1 2> ${OUTDIR}/${STDERR_FILE_NAME}"
-fi
-
-
-#-----------------
-# ツール実行処理
-#-----------------
-
-eval "db_syntax_diff.pl ${option}";
-
-
-# 実行結果のエラー判定
+db_syntax_diff.pl -e "${TARGET_CHAR}" -i "${TARGET_PATH},${TARGET_EXT}" -o "${TMPDIR}/tmp.xml" -m "${TARGET_MODE}";
 if [ $? -ne 0 ]; then
   echo "db_syntax_diff.pl error." >&2;
   exit 1;
 fi
-
 
 # 2. multibyte_space
 #    > $TMPDIR/multibyte_space.xml
@@ -104,15 +75,12 @@ mkdir csv;
 mkdir editdata;
 mv result.csv csv/;
 cd csv;
-perl ../../../src/csvtool_utf8.pl result.csv "${TARGET_CHAR}"
-
-# csvツールのエラー判定
+perl ../../../bin/csvtool_utf8.pl result.csv "${TARGET_CHAR}"
 if [ $? -ne 0 ]; then
   echo "csvtool_utf8.pl error." >&2;
   rm -rf "${TMPDIR}";
   exit 1;
 fi
-
 
 if [ $(find -name "*.err" | wc -w) -ne 0 ]; then
     ## 5-2. make data for editing.

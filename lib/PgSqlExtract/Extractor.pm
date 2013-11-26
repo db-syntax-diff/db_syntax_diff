@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #############################################################################
-#  Copyright (C) 2007-2013 NTT
+#  Copyright (C) 2007-2011 NTT
 #############################################################################
 
 #####################################################################
@@ -676,7 +676,6 @@ sub execute_plan_a_hostvariable {
     my ($parameter, $host_variable, $result) = @_;
 
     # ターゲット情報に設定されてしまうため、最終行の情報をクリア
-    my $code = $parameter->{code_body};
     $parameter->{code_body} = undef;    
 
     for my $host_info (keys( %$host_variable )) {
@@ -684,7 +683,7 @@ sub execute_plan_a_hostvariable {
         # ホスト変数情報をホスト変数名と行数に分割
         #
         my @host_variable = split(':',$host_info);
-        my $one_matching = create_matching_from_id($code, $parameter->{pattern_dic_ref}, "VAR-001-001", $host_variable[0]);
+        my $one_matching = create_matching_from_id($parameter->{pattern_dic_ref}, "VAR-001-001", $host_variable[0]);
         
         create_result($parameter, $one_matching, $result, $host_variable[1]);
 
@@ -848,7 +847,6 @@ sub extract_sql_at_string {
                 $pattern_result->message_id($one_matching->{message_id});
                 $pattern_result->pattern_type($one_matching->{pattern_type});
                 $pattern_result->level($one_matching->{report_level});
-                $pattern_result->score($one_matching->{report_score});
                 $pattern_result->struct($one_matching->{pattern_body});
                 $pattern_result->target($parameter->{code_body});
                 $pattern_result->message($one_matching->{message_body});
@@ -1147,7 +1145,6 @@ sub extract_execsql {
 #|  message_id => "メッセージID",
 #|  pattern_type => "抽出パターン種別",
 #|  report_level => "報告レベル",
-#|  report_score => "修正工数ポイント",
 #|  pattern_body => "抽出パターン定義",
 #|  message_body => "メッセージ内容"
 #|  current_function => "パターンを検出した関数名"
@@ -1213,7 +1210,6 @@ sub extract_sql_at_literal {
 #|  message_id => "メッセージID",
 #|  pattern_type => "抽出パターン種別",
 #|  report_level => "報告レベル",
-#|  report_score => "修正工数ポイント",
 #|  pattern_body => "抽出パターン定義",
 #|  message_body => "メッセージ内容"
 #|  current_function => "パターンを検出した関数名"
@@ -1314,7 +1310,6 @@ sub extract_sql_at_literal_common {
 #|  message_id => "メッセージID",
 #|  pattern_type => "抽出パターン種別",
 #|  report_level => "報告レベル",
-#|  report_score => "修正工数ポイント",
 #|  pattern_body => "抽出パターン定義",
 #|  message_body => "メッセージ内容"
 #|  current_function => "パターンを検出した関数名"
@@ -1822,7 +1817,7 @@ sub extract_one_pattern {
                         }else{
 
                             push(@matching_list,
-                        	    create_matching($code, $pattern_dic_ref, $sub_one_pattern_ref));
+                        	    create_matching($pattern_dic_ref, $sub_one_pattern_ref));
                         }
                         
                         #
@@ -1886,7 +1881,7 @@ sub extract_one_pattern {
                     push(@matching_list, @plugin_maches_list);
                 }
             }else{
-                push(@matching_list, create_matching($code, $pattern_dic_ref, $one_pattern_ref));
+                push(@matching_list, create_matching($pattern_dic_ref, $one_pattern_ref));
             }
 
             #
@@ -2016,7 +2011,7 @@ sub extract_same_pattern {
                 push(@matching_list, @plugin_maches_list);
             }
         }else{
-            push(@matching_list, create_matching($code, $pattern_dic_ref, $one_pattern_ref));
+            push(@matching_list, create_matching($pattern_dic_ref, $one_pattern_ref));
         }
 
         #
@@ -2083,16 +2078,14 @@ sub get_devolve_pattern_id {
 #####################################################################
 
 sub create_matching {
-    my ($code, $pattern_dic_ref, $one_pattern_dic_ref, $replace_string) = @_;
+    my ($pattern_dic_ref, $one_pattern_dic_ref, $replace_string) = @_;
     
     my $one_matching = {
         message_id   => $one_pattern_dic_ref->{pattern_body}->{message_id},
         pattern_type => $one_pattern_dic_ref->{pattern_type},
         report_level => $one_pattern_dic_ref->{pattern_body}->{report_level},
-        report_score => $one_pattern_dic_ref->{pattern_body}->{report_score},
         pattern_body => $one_pattern_dic_ref->{pattern_body}->{pattern_body},
         pattern_pos => $one_pattern_dic_ref->{pattern_body}->{pattern_pos},
-        code_body => $code,
     };
     
     #
@@ -2122,15 +2115,6 @@ sub create_matching {
 
     $one_matching->{message_body} = $message;
 
-    
-    #
-    #REPLACEPATTERNノードが存在する場合は追加
-    #
-    if(defined $one_pattern_dic_ref->{pattern_body}->{replace_pattern}){
-    	$one_matching->{replace_pattern} = $one_pattern_dic_ref->{pattern_body}->{replace_pattern};
-    	$one_matching->{replace_flag} = $one_pattern_dic_ref->{pattern_body}->{replace_flag};
-    }
-    
     #
     #TARGETDBMSノードが存在する場合は追加
     #
@@ -2164,7 +2148,7 @@ sub create_matching {
 #####################################################################
 
 sub create_matching_from_id {
-    my ($code, $pattern_dic_ref, $message_id, $replace_string) = @_;
+    my ($pattern_dic_ref, $message_id, $replace_string) = @_;
     
     my $one_pattern_dic_ref = $pattern_dic_ref->{pattern}->{$message_id};
     
@@ -2178,7 +2162,6 @@ sub create_matching_from_id {
             pattern_body => {
                 message_id   => '',
                 report_level => 'FATAL',
-                report_score => '',
                 pattern_body => '',
                 message_body => FATAL_MESSAGE
             },
@@ -2186,7 +2169,7 @@ sub create_matching_from_id {
         $replace_string = $message_id;
     }
     
-    return create_matching($code, $pattern_dic_ref, $one_pattern_dic_ref, $replace_string);
+    return create_matching($pattern_dic_ref, $one_pattern_dic_ref, $replace_string);
 }
 
 #####################################################################
@@ -2222,13 +2205,8 @@ sub create_result {
     $extract_pattern->message_id($pattern_info->{message_id});
     $extract_pattern->pattern_type($pattern_info->{pattern_type});
     $extract_pattern->level($pattern_info->{report_level});
-    $extract_pattern->score($pattern_info->{report_score});
     $extract_pattern->struct($pattern_info->{pattern_body});
-    if(defined $parameter->{code_body}){
-        $extract_pattern->target($parameter->{code_body});
-    }else{
-        $extract_pattern->target($pattern_info->{code_body});
-    }
+    $extract_pattern->target($parameter->{code_body});
     $extract_pattern->message($pattern_info->{message_body});
 
     #
@@ -2237,15 +2215,6 @@ sub create_result {
     $extract_pattern->variablename($parameter->{variablename});
     $extract_pattern->classname($parameter->{funcname});
 
-    #
-    #REPLACEDPATTERNノードが存在する場合は
-    #報告結果へ格納
-    #
-    if(defined $pattern_info->{replace_pattern}){
-    	$extract_pattern->replace_pattern($pattern_info->{replace_pattern});
-        $extract_pattern->replace_flag($pattern_info->{replace_flag});
-    }
-    
     #
     #TARGETDBMSノードが存在する場合は
     #報告結果へ格納

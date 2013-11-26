@@ -22,23 +22,14 @@ use File::Spec::Unix;
 use PgSqlExtract::Common;
 use utf8;
 
-our @EXPORT_OK = qw( prepare_intermediate_file_list set_pg_sqlextract_macro include_file_hash_call return_parse_enc);
+our @EXPORT_OK = qw( preprocess_analyzer_prev set_pg_sqlextract_macro );
+
 #ファイルハンドル
 my $fh_read_def = READ;
 my $fh_out_def = OUT;
 #ファイルハンドルカウンタ
-my $count;
+my $count = undef;
 
-#ネストの深さ
-my $depth;
-
-#includeファイルのリスト（連想配列 key:ファイル名 value:中間ファイルの相対パス）
-my %include_file_hash = ();
-
-#二重インクルード対策用の配列
-my @input_filelist=();
-my $input_filelist_ref = \@analyzed_file_list;
-my $parse_enc; #Parser用のエンコーディング情報
 #プリプロセスのパターン
 #if_group => #if|#ifdef|#ifndef
 #elif_group => #elif
@@ -51,79 +42,6 @@ my $env_ifgroup = "PG_SQLEXTRACT_MACRO";
 my @ifgroup_config = split(/\,/ , $ENV{$env_ifgroup});
 #環境変数の設定方法
 #export PG_SQLEXTRACT_MACRO=文字列A,文字列B
-
-#####################################################################
-# Function: include_file_hash_call
-#
-# 概要：
-# Parserの再帰処理時にIncludeファイルの中間ファイルの置き場所を
-# 指定するために使う。
-# Parserでの利用のみを考えている。
-#
-#####################################################################
-
-sub include_file_hash_call{
-    my ($include_file_name_for_Parser) = @_;
-    return $include_file_hash{$include_file_name_for_Parser};
-}
-
-#####################################################################
-# Function: prepare_intermediate_file_list
-#
-#
-# 概要:
-# 本モジュールの入り口となる関数。
-# カウントの初期化、プリプロセスの構文解析が終わったファイルの名前を
-# 管理するリスト（配列）の宣言を行う。
-# また、Perlの仕様上、リスト（配列）はリファレンス化し、サブルーチンに
-# 引数として渡している。
-#
-# パラメータ：
-# count - ファイルハンドル用のカウンタ（グローバル変数）
-# depth - ネストの深さ用のカウンタ（グローバル変数）
-# analyzed_flie_list - プリプロセス処理済みのファイル名のリスト
-# analyzed_file_list_ref - 上記リストのリファレンス
-# 
-# 戻り値：
-# @{$analyzed_file_list_ref} - リファレンスの実体（配列）
-#
-# 例外：
-# なし
-#
-# 特記事項:
-# なし
-#
-#
-#####################################################################
-sub prepare_intermediate_file_list {
-    my ($filename, $varlist, $encoding_name, $include_dir_list) = @_;
-
-    #グローバルで宣言しているファイルハンドルのカウントを初期化する。
-	$count=0;
-    #グローバルで宣言しているネストの深さのカウントを初期化する。
-	$depth=0;
-
-    #構文解析が終わったファイルの名前を格納するための配列を宣言する。
-	my @analyzed_file_list=();
-
-    #配列のリファレンスを作成する。以降の関数では引数としてリファレンスを渡す。
-    ##配列のリファレンスを作成する理由
-    # 呼び出した関数（サブルーチン）は与えられた引数の全てを配列"@_"に格納するため、
-    # 引数に配列の実体を与えると配列の区切りがなくなってしまい、サブルーチン内で正しく
-    # 配列を受け取ることができなくなる。
-    my $analyzed_file_list_ref = \@analyzed_file_list;
-    $parse_enc=$encoding_name;
-    #二重インクルード予防のための入力ファイルリスト用配列を初期化する。
-    @input_filelist=();
-    $input_filelist_ref = \@analyzed_file_list;
-
-	#中間ファイルを作成する関数を呼び出す
-    $analyzed_file_list_ref=preprocess_analyzer_prev($filename, $varlist, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
-
-    #デリファレンスし、実体（配列）に戻し、最後の要素（ソースの中間ファイルのフルパス）を返却する。
-    return pop @{$analyzed_file_list_ref};
-}
-
 
 #####################################################################
 # Function: preprocess_analyzer_prev
@@ -153,9 +71,11 @@ sub prepare_intermediate_file_list {
 #
 #####################################################################
 sub preprocess_analyzer_prev {
-	my ($filename, $varlist, $encoding_name, $include_dir_list, $analyzed_file_list_ref) = @_;
+	my ($filename, $varlist, $encoding_name, $include_dir_list) = @_;
+	
 	my $filename_buff = $filename;
-
+    #開始時のみファイルハンドルカウンタを0に初期化
+	$count=0 if(!defined $count);	
 	#filenameからファイルパスとファイル名を分割する
 	my $filedir = dirname($filename);
 	if($filedir ne '\.'){
@@ -163,7 +83,7 @@ sub preprocess_analyzer_prev {
 	}
 	$filedir = File::Spec::Unix->rel2abs($filedir);
 	$filedir =~ s{^.*?/}{}xmg;
-
+	
 	my $output_filename = $filename_buff . "_preprocess.c";
 	
 	my $output_dir = ANALYZE_TEMPDIR . $filedir;
@@ -184,27 +104,14 @@ sub preprocess_analyzer_prev {
 	open($fh_out, ">>:encoding($encoding_name)", "$output_dir/$output_filename") or croak "File open error $output_dir/$output_filename($!)\n";
 
 	#プリプロセスの構文解析
-	$analyzed_file_list_ref=preprocess_analyzer($fh_out, $fh_read, $varlist, $filename, $encoding_name, $include_dir_list,$analyzed_file_list_ref);
+	my @include_file_list=preprocess_analyzer($fh_out, $fh_read, $varlist, $filename, $encoding_name, $include_dir_list);
+	push(@include_file_list,"$output_dir/$output_filename");
 
-    #変数の値を修正する。hoge//huge.c -> hoge/hyge.c に修正する。
-    my $output_filepath = "$output_dir/$output_filename";
-    $output_filepath =~ s/\/\//\//g;
-
-	#構文解析の終わったファイル名を配列に追加する
-    push(@{$input_filelist_ref},$filename);
-    push(@{$analyzed_file_list_ref},$output_filepath);
-
-    #includeファイルだけのリスト（連想配列）を作成する。あとで、CParser.pmから参照する。
-    #但し、同じ名称のヘッダファイルが存在する場合、valueが上書きされるため、WARNログを出力する。
-    if(exists $include_file_hash{basename($filename)}){
-        print_log("(WARN) | value of hash was overwritten.");
-    }
-    $include_file_hash{basename($filename)} = "$output_filepath"if(!$depth == 0);
 	#ファイルのクローズ
 	close($fh_read);
 	close($fh_out);
-
-	return $analyzed_file_list_ref;
+	
+	return @include_file_list;
 
 }
 
@@ -236,10 +143,11 @@ sub preprocess_analyzer_prev {
 #
 #####################################################################
 sub preprocess_analyzer {
-	my ($fh_out, $fh_read, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref) = @_;
+	my ($fh_out, $fh_read, $varlist, $filename, $encoding_name, $include_dir_list) = @_;
 	
 	#if_groupの条件
 	my $ifgroup_condition = "";
+    my @includefilename=();
 	
 	#入力ファイルのソースを１行ずつ解析
 	while( my $line = readline $fh_read ){ 
@@ -248,7 +156,7 @@ sub preprocess_analyzer {
 		if( $line =~ m{^\s*(\#\s*if\s+\S+|\#\s*ifdef\s+\S+|\#\s*ifndef\s+\S+)}xmg ){
 			print $fh_out "\n";
 			$ifgroup_condition = if_group_condition_analyzer($line);
-			$analyzed_file_list_ref=if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, 1, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
+			if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, 1, $varlist, $filename, $encoding_name, \@includefilename, $include_dir_list);
 		}
 		#control_line(define)の場合
 		elsif( $line =~ m{^\s*\#\s*define\s*(.*)}xmg ){
@@ -257,35 +165,9 @@ sub preprocess_analyzer {
 		}
 		#control_line(include"")の場合
 		elsif( $line =~ m{^\s*\#\s*include\s*["](.*\.h)["]}xmg ){
-
-            #パターンマッチしたincludeファイルの名前を変数に格納する。 
-            my $include_file_name = $1;
-
-            #Parser用の二重インクルード対策
-            my @line_block = split(/"/,$line);
-            my $include_block = @line_block[1]."_preprocess.c";
-            if (!grep /\S*$include_block$/,@{$analyzed_file_list_ref}){
-
-                #$lineを"#"で検索し、postmatch部分(#以降の文字列'include"hoge.h"')を$lineに代入する。
-                #処理内容：$line = #include"hoge.h" -> $line = include"hoge.h"
-                $line =~ m/\#/;
-                $line = $';
-
-                #CParser.yp内で再帰的にParserを呼び出す際にトリガーとなるTOKENに置き換える
-                #INCLUDEFORPARSE_TOKENと、STRING_LITERAL("を含むTOKEN)の形に整形している。
-                #処理内容：$line = include"hoge.h" -> $line = includefordbsyntaxdiff"hoge.h"
-                $line =~ s/include/includefordbsyntaxdiff/;
-
-                #includefordbsyntaxdiff"hoge.h"が中間ファイルに出力される。
-                print $fh_out $line;
-
-            }else{
-                #既に処理済みのIncludeであれば、改行のみ出力する。
-                print $fh_out "\n";
-            }
-
-            $analyzed_file_list_ref = include_analyzer($include_file_name, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
-        }
+			print $fh_out "\n";
+			include_analyzer($1, $varlist, $filename, $encoding_name, \@includefilename, $include_dir_list);
+		}
 		#control_line(include<>)の場合
 		elsif( $line =~ m{^\s*\#\s*include\s*[<](.*\.h)[>]}xmg ){
 			print $fh_out "\n";
@@ -300,7 +182,7 @@ sub preprocess_analyzer {
 			print $fh_out $line;
 		}
 	}
-    return $analyzed_file_list_ref;
+    return @includefilename;
 }
 
 #####################################################################
@@ -336,7 +218,7 @@ sub preprocess_analyzer {
 #
 #####################################################################
 sub if_group_analyzer {
-	my ($fh_out, $fh_read, $pre_ifgroup_condition, $pre_exec_flg, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref) = @_;
+	my ($fh_out, $fh_read, $pre_ifgroup_condition, $pre_exec_flg, $varlist, $filename, $encoding_name, $includefilename, $include_dir_list) = @_;
 		
 	#処理フラグ
 	my $exec_flg= 1;
@@ -404,7 +286,7 @@ sub if_group_analyzer {
 			elsif( $line =~ m{^\s*(\#\s*if\s+\S+|\#\s*ifdef\s+\S+|\#\s*ifndef\s+\S+)}xmg ){
 				print $fh_out "\n";
 				$ifgroup_condition = if_group_condition_analyzer($line);
-				$analyzed_file_list_ref=if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, $exec_flg, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
+				if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, $exec_flg, $varlist, $filename, $encoding_name, $includefilename, $include_dir_list);
 			}
 			#control_line(define)の場合
 			elsif( $line =~ m{^\s*\#\s*define\s*(.*)}xmg ){
@@ -415,40 +297,9 @@ sub if_group_analyzer {
 			}
 			#control_line(include"")の場合
 			elsif( $line =~ m{^\s*\#\s*include\s*["](.*\.h)["]}xmg ){
-
-                #パターンマッチしたincludeファイルの名前を変数に格納する。 
-                my $include_file_name = $1;
-
-                #Parser用の二重インクルード対策
-                my @line_block = split(/"/,$line);
-                my $include_block = @line_block[1]."_preprocess.c";
-                if($exec_flg ==1){
-                    if (!grep /\S*$include_block$/,@{$analyzed_file_list_ref}){
-
-                        #$lineを"#"で検索し、postmatch部分(#以降の文字列'include"hoge.h"')を$lineに代入する。
-                        #処理内容：$line = #include"hoge.h" -> $line = include"hoge.h"
-                        $line =~ m/\#/;
-                        $line = $';
-
-                        #CParser.yp内で再帰的にParserを呼び出す際にトリガーとなるTOKENに置き換える
-                        #INCLUDEFORPARSE_TOKENと、STRING_LITERAL("を含むTOKEN)の形に整形している。
-                        #処理内容：$line = include"hoge.h" -> $line = includefordbsyntaxdiff"hoge.h"
-                        $line =~ s/include/includefordbsyntaxdiff/;
-
-                        #includefordbsyntaxdiff"hoge.h"を中間ファイルに出力する。
-                        print $fh_out $line;
-
-                    }else{
-                        #既に処理済みのIncludeファイルであれば、改行のみ出力する。
-                        print $fh_out "\n";
-                    }
-                }else{
-                    #実行しないifグループは改行を出力する
-                    print $fh_out "\n";
-                }
-
+				print $fh_out "\n";
 				if($exec_flg == 1){
-					$analyzed_file_list_ref = include_analyzer($include_file_name, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
+					include_analyzer($1, $varlist, $filename, $encoding_name, $includefilename, $include_dir_list);
 				}
 			}
 			#control_line(include<>)の場合
@@ -483,15 +334,15 @@ sub if_group_analyzer {
 			elsif( $line =~ m{^\s*(\#\s*if\s+\S+|\#\s*ifdef\s+\S+|\#\s*ifndef\s+\S+)}xmg ){
 				print $fh_out "\n";
 				$ifgroup_condition = if_group_condition_analyzer($line);
-				$analyzed_file_list_ref=if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, $exec_flg, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
+				if_group_analyzer($fh_out, $fh_read, $ifgroup_condition, $exec_flg, $varlist, $filename, $encoding_name, $includefilename, $include_dir_list);
 			}
 			#endif_lineでない場合
 			else{
 				print $fh_out "\n";
-			}
-	   	 }
+			}	
+	   	 }  	 
    	 }
-	return $analyzed_file_list_ref;
+
 }
 
 #####################################################################
@@ -983,34 +834,27 @@ sub comment_delete {
 #
 #####################################################################
 sub include_analyzer {
-	my ($include_restring, $varlist, $filename, $encoding_name, $include_dir_list, $analyzed_file_list_ref) = @_;
+	my ($include_restring, $varlist, $filename, $encoding_name, $include_file, $include_dir_list) = @_;
 	
 	my $includefilename=search_includefile($include_restring, $filename, $include_dir_list);
-
+	
 	if(!defined $includefilename){
 	    return;
 	}
 	
 	my $includefilename_prev = "./.pg_sqlextract_tmp/" . $includefilename . "_preprocess.c";
-    $includefilename_prev =~ s/\/\//\//g;
-
-	#インクルード済みか判定
-	if (!grep /^$includefilename$/,@{$input_filelist_ref}){
-	    get_loglevel() > 0 and print_log("(INFO) | analyze include file -- $include_restring");
-		
-		#ネストの深さをインクリメントする
-	    $depth++;
-		get_loglevel() > 2 and print_log("(DEBUG 3) | " . basename($includefilename) . " :  depth = $depth");
-		#ハンドル用のカウンタをインクリメントする
-	    $count++;
-	    #インクルードファイルの中間ファイル作成
-	    $analyzed_file_list_ref=preprocess_analyzer_prev($includefilename, $varlist, $encoding_name, $include_dir_list, $analyzed_file_list_ref);
-
-		#ネストの深さをデクリメントする
-	    $depth--;
-	}
 	
-	return $analyzed_file_list_ref;
+	#インクルード済みか判定
+	if (!grep /^$includefilename_prev$/,@{$include_file}){
+	    get_loglevel() > 0 and print_log("(INFO) | analyze include file -- $include_restring");
+	    #インクルードファイルの中間ファイル作成
+	    $count++;
+	    my @intermediary_file_name=preprocess_analyzer_prev($includefilename, $varlist, $encoding_name, $include_dir_list);
+	    #インクルード済みファイル名を格納
+	    push(@$include_file,@intermediary_file_name);
+	}#end if !grep
+	
+	return;
 }
 
 #####################################################################
@@ -1045,7 +889,7 @@ sub search_includefile {
         if(-f $include_restring) {
             return $include_restring;
         }else{
-            print_log("(WARN) | No such include file $include_restring");
+            get_loglevel() > 0 and print_log("(INFO) | No such include file $include_restring");
             return undef;
         }
 	}
@@ -1068,7 +912,7 @@ sub search_includefile {
         }
     }
 
-    print_log("(WARN) | No such include file $include_restring");
+    get_loglevel() > 0 and print_log("(INFO) | No such include file $include_restring");
     return undef;
 }
 
@@ -1094,15 +938,6 @@ sub search_includefile {
 #####################################################################
 sub set_pg_sqlextract_macro {
     @ifgroup_config = split(/\,/ , $ENV{$env_ifgroup});
-}
-
-##########################################################
-# Function: return_parse_enc
-#
-# 概要：Parserがエンコーディング情報を取得するための関数
-##########################################################
-sub return_parse_enc{
-    return $parse_enc;
 }
 
 1;

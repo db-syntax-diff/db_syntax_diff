@@ -7,7 +7,7 @@
 <xsl:strip-space elements="*"/>
 
 <xsl:template match="REPORT_ITEM">
-<xsl:value-of select="../@name"/>,<xsl:value-of select="normalize-space(SOURCE/CLASS/text())"/>,<xsl:value-of select="normalize-space(SOURCE/METHOD/text())"/>,<xsl:value-of select="normalize-space(SOURCE/LINE/text())"/>,<xsl:value-of select="normalize-space(SOURCE/COLUMN/text())"/>,<xsl:value-of select="@id"/>,<xsl:value-of select="@type"/>,<xsl:value-of select="@level"/>,<xsl:value-of select="@score"/>,"<xsl:value-of select="normalize-space(MESSAGE/text())"/>","<xsl:value-of select="normalize-space(TARGET/text())"/>"
+<xsl:value-of select="../@name"/>,<xsl:value-of select="normalize-space(SOURCE/CLASS/text())"/>,<xsl:value-of select="normalize-space(SOURCE/METHOD/text())"/>,<xsl:value-of select="normalize-space(SOURCE/LINE/text())"/>,<xsl:value-of select="normalize-space(SOURCE/COLUMN/text())"/>,<xsl:value-of select="@id"/>,<xsl:value-of select="@type"/>,<xsl:value-of select="@level"/>,"<xsl:value-of select="normalize-space(MESSAGE/text())"/>","<xsl:value-of select="normalize-space(TARGET/text())"/>"
 </xsl:template>
 <xsl:template match="STRING_ITEM"/>
 <xsl:template match="METADATA"/>

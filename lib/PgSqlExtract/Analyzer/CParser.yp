@@ -1,5 +1,5 @@
 #############################################################################
-#  Copyright (C) 2010-2013 NTT
+#  Copyright (C) 2010-2011 NTT
 #############################################################################
 
 #####################################################################
@@ -48,15 +48,6 @@ use PgSqlExtract::Common;
 use Scalar::Util;
 
 #!
-#! 再帰Parserのために追加したもの
-#!
-use PgSqlExtract::Analyzer::CParser;
-use PgSqlExtract::Analyzer::PreprocessAnalyzer;
-my $G_file_name = ""; #! Analyzer.pmで実施していた抽出した変数の行数にファイル名を付与するために追加。
-my %G_parent_include_filename = (); #! key:子includefile_name  value:親includefile_name
-my $G_fileinfo_ref_tmp = CFileInfo->new(); #! $G_fileinfo_refの退避用の構造体。関数内Include対応として追加
-
-#!
 #! 識別子(Identifiers)の定義
 #!
 my $Identifiers = qr{ ( [\w_\$][\w\d_\$]* ) }xms;
@@ -71,7 +62,7 @@ my %keywords = (
 		extern	float		for			goto		if			inline		int
 		long	new			private		protected	public		register	restrict
 		return	short		signed		sizeof		static		struct		switch
-		typedef	union		unsigned	void		volatile	while		includefordbsyntaxdiff
+		typedef	union		unsigned	void		volatile	while
     ),
 );
 
@@ -145,8 +136,7 @@ my %separator = (
 	')' => 'RP_TOKEN' ,
 	';' => 'SMC_TOKEN',
 	',' => 'CM_TOKEN' ,
-)
-;
+);
 
 while(my ($key, $value) = each %separator) {
 	$keywords{$key} = $value;
@@ -1716,15 +1706,15 @@ compound_statement
 	}
 	| LCB_TOKEN block_item_list RCB_TOKEN
 	{
-        printDebugLog("compound_statement: { block_item_list }");
-        [ 'N_ScopeInfo' , create_scopeinfo($_[2])];
+		printDebugLog("compound_statement: { block_item_list }");
+		[ 'N_ScopeInfo' , create_scopeinfo($_[2])];
 	}
 	;
 
 block_item_list
 	: block_item
 	{
-        printDebugLog("block_item_list:block_item");
+		printDebugLog("block_item_list:block_item");
         my $blockitemlist = ['N_block_item_list'];
         defined $_[1] and push(@{$blockitemlist}, $_[1]);
         $blockitemlist;
@@ -1775,32 +1765,6 @@ block_item
 		printDebugLog("block_item:statement");
 		$_[1];
 	}
-    | preproccess_include #! 関数内で呼び出される#include"hoge.h"用の構文木。詳細なコメントはexternal_declarationを参照。
-    {
-        printDebugLog("block_item:preproccess_include include_file_name:$_[1]");
-        my $txt  = $lex->{TEXT};
-        my $pos  = $lex->{POSITION};
-        my $line = $lex->{LINE};
-        $G_parent_include_filename{$_[1]} = $G_file_name;
-        $G_file_name = $_[1];
-        my $recursive_cparser = PgSqlExtract::Analyzer::CParser->new();
-        my $file_name_with_path = PgSqlExtract::Analyzer::PreprocessAnalyzer::include_file_hash_call($_[1]);
-        my $encording_name = PgSqlExtract::Analyzer::PreprocessAnalyzer::return_parse_enc();
-        if (defined $file_name_with_path){
-            my $c_strings = read_input_file($file_name_with_path,"$encording_name");
-            $recursive_cparser->{YYData}->{INPUT} = $c_strings;
-            $recursive_cparser->{YYData}->{loglevel} = 7;
-            $recursive_cparser->Run();
-            printDebugLog("-------------- Run finish $_[1] --------------");
-        }else{
-            printDebugLog("No such file $_[1] ---------------------------");
-        }
-        $lex->{TEXT} = $txt;
-        $lex->{POSITION} = $pos;
-        $lex->{LINE} = $line;
-        $G_file_name = $G_parent_include_filename{$_[1]};
-        $G_fileinfo_ref;
-    }
 	;
 
 expression_statement
@@ -2011,17 +1975,17 @@ jump_statement
 
 
 # A.2.4 External definitions
-translation_unit
-    : # /* empty */
+translation_unit:
+#    /* empty */
 	| external_declaration
 	{
 		printDebugLog("translation_unit:external_declaration");
 		if(defined $_[1]) {
             if(ref($_[1]) eq "HASH" && exists($_[1]->{VARIABLE})) {
-                push(@{$G_fileinfo_ref_tmp->varlist()},@{$_[1]->{VARIABLE}});
+                $G_fileinfo_ref->varlist($_[1]->{VARIABLE});
             }
     		if(ref($_[1]) eq "HASH" && exists($_[1]->{FUNCTION})) {
-                push(@{$G_fileinfo_ref_tmp->functionlist()},$_[1]->{FUNCTION});
+            	push(@{$G_fileinfo_ref->functionlist()}, $_[1]->{FUNCTION});
             }
         }
         $G_fileinfo_ref
@@ -2031,10 +1995,10 @@ translation_unit
 		printDebugLog("translation_unit:translation_unit external_declaration");
 		if(defined $_[2]) {
             if(ref($_[2]) eq "HASH" && exists($_[2]->{VARIABLE})) {
-                push(@{$G_fileinfo_ref_tmp->varlist()},@{$_[2]->{VARIABLE}});
+                push(@{$G_fileinfo_ref->varlist()}, @{$_[2]->{VARIABLE}});
             }
-            if(ref($_[2]) eq "HASH" && exists($_[2]->{FUNCTION})) {
-                push(@{$G_fileinfo_ref_tmp->functionlist()}, $_[2]->{FUNCTION});
+    		if(ref($_[2]) eq "HASH" && exists($_[2]->{FUNCTION})) {
+            	push(@{$G_fileinfo_ref->functionlist()}, $_[2]->{FUNCTION});
             }
         }
         $G_fileinfo_ref
@@ -2046,14 +2010,14 @@ translation_unit
 external_declaration
 	: function_definition
 	{
-        printDebugLog("external_declaration:function_definition");
-        if(defined $_[1]) {
+		printDebugLog("external_declaration:function_definition");
+		if(defined $_[1]) {
             $_[1];
         }else{
             undef;
         }
 	}
-	| declaration # グローバルで書かれているものを見る。この下でさらにembedded_sqlがあったりする。らしい。
+	| declaration
 	{
 		printDebugLog("external_declaration:declaration");
 
@@ -2070,7 +2034,7 @@ external_declaration
                 my $decl = refer_metanode($current_vardecl);
                 
                 if(defined $decl) {
- 		            my $varinfo = create_VariableInfo($decl->{name}, $type, $decl->{type}, $decl->{value}, $G_file_name);
+ 		            my $varinfo = create_VariableInfo($decl->{name}, $type, $decl->{type}, $decl->{value});
                     push(@varlist, $varinfo);
                 }
             }
@@ -2089,69 +2053,15 @@ external_declaration
 		printDebugLog("external_declaration:embedded_sql");
 		$_[1];
 	}
-	| preproccess_include #! グローバル部分に書かれているinclude"hoge.h"の処理。関数内のincludeはblock_itemで実施。
-	{
-		printDebugLog("external_declaration:include preproccess include_file_name:$_[1]");
-        #! 読込中のlexの情報を残しておく。
-        #! 再帰的にParserを呼び出すため、情報が消されてしまう。
-        my $txt  = $lex->{TEXT};
-        my $pos  = $lex->{POSITION};
-        my $line = $lex->{LINE};
-        #! Includeファイルの親子関係を残す。再帰的にIncludeファイルが読み込まれている場合に必要となる。
-        #! $G_file_nameには呼び出し元のIncludeファイルの名前が格納されている。
-        $G_parent_include_filename{$_[1]} = $G_file_name;
-        $G_file_name = $_[1];
-        #! Parserの準備を行う。
-        my $recursive_cparser = PgSqlExtract::Analyzer::CParser->new();
-        #! Parserを掛ける対象はPreprocessAnalyzer.pmで解析が終わったファイルなので、ヘッダファイル名($_[1])を引数に
-        #! 中間ファイルの相対パスを取得し、変数$file_name_with_pathに格納する。
-        #! 次にその変数をread_input_fileの入力にする。Includeファイルがない場合、読み込み処理は行わない。
-        my $file_name_with_path = PgSqlExtract::Analyzer::PreprocessAnalyzer::include_file_hash_call($_[1]);
-        my $encording_name = PgSqlExtract::Analyzer::PreprocessAnalyzer::return_parse_enc();
-        if (defined $file_name_with_path){
-            my $c_strings = read_input_file($file_name_with_path,"$encording_name");
-            $recursive_cparser->{YYData}->{INPUT} = $c_strings;
-            $recursive_cparser->{YYData}->{loglevel} = 7;
-            $recursive_cparser->Run();
-            printDebugLog("-------------- Run finish $_[1] --------------");
-        }else{
-            printDebugLog("No such file $_[1] ---------------------------");
-        }
-        #! Parseが終わったら、元読んでいた(includefordbsyntaxdiff"hoge.h"を見つけた箇所)の情報を
-        #! 戻して、以降のParseを続ける。
-        $lex->{TEXT} = $txt;
-        $lex->{POSITION} = $pos;
-        $lex->{LINE} = $line;
-        #! $G_file_nameに現在のIncludeファイルの名前を入れる。
-        $G_file_name = $G_parent_include_filename{$_[1]};
-        $G_fileinfo_ref;
-	}
 	;
-
-preproccess_include
-	: INCLUDEFORDBSYNTAXDIFF_TOKEN STRING_LITERAL #! PreprocessAnalzer.pmで置換した文字列includefordbsyntaxdiff"hoge.h"用の構文木
-    {
-        printDebugLog("preproccess_include : INCLUDEFORDBSYNTAXDIFF_TOKEN STRING_LITERAL");
-        #! Includeファイル名を取得するための処理。
-        #! 1.STRING_LITERALのTOKEN("hoge.h"or"foo/hoge.h")を取得する。
-        #!   この時点では()で示すように、変数には"付きでファイル名もしくはパス付きのファイル名が格納される。
-        my $libfilename_withpath = $_[2]->{TOKEN};
-        #! 2.変数内の文字列を"を空文字で置換して、"を消す。
-        $libfilename_withpath =~ s/\"//g;
-        #! 3."がなくなった変数内の文字列を/を区切り文字にして、分割した文字列を配列に格納する。
-        my @libfilename = split(/\//,$libfilename_withpath);
-        #! 配列の最後の要素(Includeファイルの名前)を返却する。
-        $libfilename[-1];
-    }
-    ;
 
 function_definition
 	: declaration_specifiers declarator compound_statement #! declaration_list のopt対処
 	{
-        printDebugLog("function_definition:declaration_specifiers declarator compund_statement");
-        my $method_decl = {TYPELIST => $_[2]->[1] , FUNCTIONNAME => $_[2]->[0]->[0]->[1]->{name}->{TOKEN}};
+		printDebugLog("function_definition:declaration_specifiers declarator compund_statement");
+		my $method_decl = {TYPELIST => $_[2]->[1] , FUNCTIONNAME => $_[2]->[0]->[0]->[1]->{name}->{TOKEN}};
         $method_decl->{SCOPE} = $_[3];
-        my $result = create_functioninfo($method_decl->{FUNCTIONNAME}, $method_decl->{SCOPE});
+		my $result = create_functioninfo($method_decl->{FUNCTIONNAME}, $method_decl->{SCOPE});
         if (defined $result){
             {FUNCTION => $result};
         }else{
@@ -2294,11 +2204,6 @@ emb_constant_string
 		printDebugLog("emb_constant_string:STRING_LITERAL");
 		 $_[1];
 	}
-    | CLN_TOKEN SQL_TOKEN #! ホスト変数
-    {
-        printDebugLog("emb_constant_string: : SQL_TOKEN");
-        [ $_[1] , $_[2] ];
-    }
 	| CLN_TOKEN IDENTIFIER_ORG #! ホスト変数
 	{
 		printDebugLog("emb_constant_string: : IDENTIFIER_ORG");
@@ -2756,7 +2661,6 @@ sub Run {
 	@G_classname_ident = ();
 
 	$lex->setTarget($self->{YYData}->{INPUT});
-
 	defined($self->{YYData}->{loglevel}) and  $self->{YYData}->{loglevel} > 10
 					and $parser_debug_flg = 0x1F;
 	$lex->setDebugMode($parser_debug_flg);
@@ -3276,7 +3180,7 @@ sub equal_nodetype {
 #
 #####################################################################
 sub create_VariableInfo {
-    my ($name, $typeinfo, $typetype, $valueinfo, $in_file_name) = @_;
+    my ($name, $typeinfo, $typetype, $valueinfo) = @_;
 
     #
     # 型名を取得する
@@ -3289,15 +3193,9 @@ sub create_VariableInfo {
         }
     ];
     scantree($typeinfo, $result_ref);
-
-    #! SY-A-a-3による仕様変更に伴う修正。Parser内でinclude処理を行うように修正したため、
-    #! Analyzer.pmで実施していた抽出した変数にファイル名を付与する処理をこの場所に
-    #! 移動させた。
+    
     my $line = $result_ref->[0]->{line};
-    if ($in_file_name){
-        $line = $in_file_name . ":" . $line;
-    }
-
+    
     #
     # 型名は、収集した式リストの「最初の式リストの最後の要素」を取得する
     # - 先頭から要素を参照し、'['の直前の型名か、要素の最後の型名を取得する
@@ -3471,36 +3369,3 @@ sub create_forvar_control {
     my $for_ctrl = ['N_ForControl', $for_init, create_addcode(), $rest->[2], create_addcode(), $rest->[3]];
     $for_ctrl
 }
-
-
-#####################################################################
-# Function: ref_tmp_marge
-#
-#
-# 概要:
-# $G_fileinfo_ref_tmpに退避させていた抽出結果を$G_fileinfo_refに戻す。
-# その際、ref_tmpはクリアする。
-# ソースファイルの読み込みが終わったあとにAnalyzer.pmから呼び出される。
-# Parserではひたすらref_tmpに情報が溜められる形になっている。
-#
-# パラメータ:
-# なし
-#
-# 戻り値:
-# なし
-#
-# 例外:
-# なし
-#
-# 特記事項:
-# なし
-#
-#####################################################################
-sub ref_tmp_marge {
-  if(ref($G_fileinfo_ref_tmp)){
-    push(@{$G_fileinfo_ref->varlist()}, @{$G_fileinfo_ref_tmp->varlist()});
-    push(@{$G_fileinfo_ref->functionlist()}, @{$G_fileinfo_ref_tmp->functionlist()});
-    $G_fileinfo_ref_tmp = CFileInfo->new();
-  }
-}
-
